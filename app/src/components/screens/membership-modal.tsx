@@ -43,14 +43,18 @@ const IS: React.CSSProperties = {
 interface Props {
   onClose: () => void;
   onSelectMember: (info: MemberInfo) => void;
+  /** Opens the modal straight into the register form (e.g. the POS "สมัครสมาชิก" button). */
+  initialPhase?: 'lookup' | 'register';
 }
 
-export default function MembershipModal({ onClose, onSelectMember }: Props) {
+export default function MembershipModal({ onClose, onSelectMember, initialPhase = 'lookup' }: Props) {
   const toast = useToast();
   const lookup = useLookupMember();
   const register = useRegisterMember();
 
-  const [phase, setPhase] = useState<'lookup' | 'register'>('lookup');
+  const [phase, setPhase] = useState<'lookup' | 'register'>(initialPhase);
+  // True only when the register form was reached via a phone lookup that found nobody.
+  const [fromMissedLookup, setFromMissedLookup] = useState(false);
   const [searchMode, setSearchMode] = useState<'phone' | 'name'>('phone');
   const [phone, setPhone] = useState('');
   const [nameInput, setNameInput] = useState('');
@@ -121,6 +125,7 @@ export default function MembershipModal({ onClose, onSelectMember }: Props) {
         setResult(null);
         setRegName('');
         setRegDob('');
+        setFromMissedLookup(true);
         setPhase('register');
         return;
       }
@@ -299,7 +304,7 @@ export default function MembershipModal({ onClose, onSelectMember }: Props) {
           {phase === 'register' && (
             <div style={{ marginTop: 18, display: 'grid', gap: 14 }}>
               <div style={{ fontSize: 13, color: 'var(--color-text-secondary)', background: 'var(--color-info-50)', padding: '10px 12px', borderRadius: 8 }}>
-                ไม่พบสมาชิกสำหรับเบอร์นี้ — สมัครใหม่ได้เลย
+                {fromMissedLookup ? 'ไม่พบสมาชิกสำหรับเบอร์นี้ — สมัครใหม่ได้เลย' : 'กรอกชื่อและเบอร์โทรเพื่อสมัครสมาชิกใหม่'}
               </div>
               <div>
                 <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', display: 'block', marginBottom: 4 }}>ชื่อ *</label>
@@ -395,7 +400,7 @@ export default function MembershipModal({ onClose, onSelectMember }: Props) {
         <div style={{ padding: '16px 24px', borderTop: '1px solid var(--color-border)', display: 'flex', gap: 10, background: 'var(--color-surface-2)' }}>
           {phase === 'register' ? (
             <>
-              <button onClick={() => setPhase('lookup')} style={{ padding: '11px 18px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)', fontSize: 14, cursor: 'pointer' }}>ย้อนกลับ</button>
+              <button onClick={() => { setFromMissedLookup(false); setPhase('lookup'); }} style={{ padding: '11px 18px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)', fontSize: 14, cursor: 'pointer' }}>ย้อนกลับ</button>
               <button onClick={doRegister} disabled={register.isPending} style={{ flex: 1, padding: '11px 18px', borderRadius: 8, background: 'var(--color-accent)', color: 'var(--color-primary-700)', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
                 {register.isPending ? 'กำลังสมัคร...' : 'สมัครและแนบกับบิล'}
               </button>
