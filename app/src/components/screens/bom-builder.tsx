@@ -9,6 +9,7 @@ import { useProductDetail, useUpdateRecipe, useLinkModifierGroups, type RecipeIt
 import { useModifierGroups, useCreateModifierGroup, useAddModifier, useDeleteModifier, DEFAULT_DRINK_MODIFIER_GROUPS, type ModifierGroup } from '@/hooks/use-modifier-groups';
 import { useCookingSteps, useReplaceCookingSteps, type CookingStepRead } from '@/hooks/use-cooking-steps';
 import { useCurrentUser, isAdmin } from '@/hooks/use-current-user';
+import { useNavGuard } from '../nav-guard';
 
 type ProductType = 'MENU' | 'INGREDIENT';
 type ApiProductType = 'MADE_TO_ORDER' | 'PRODUCED';
@@ -46,6 +47,13 @@ export default function BOMBuilder() {
   const replaceSteps = useReplaceCookingSteps();
   const [editedSteps, setEditedSteps] = useState<CookingStepRead[]>([]);
   const [newStepText, setNewStepText] = useState('');
+
+  // Unsaved-changes guard: pendingNav holds the navigation to run once the user
+  // resolves the warning (save / leave / cancel).
+  const registerNavGuard = useNavGuard();
+  const [pendingNav, setPendingNav] = useState<(() => void) | null>(null);
+  const [savingLeave, setSavingLeave] = useState(false);
+  const isDirtyRef = useRef(false);
 
   useEffect(() => {
     if (!selectedId && products?.[0]) {
@@ -116,8 +124,8 @@ export default function BOMBuilder() {
     toast({ kind: 'info', title: `เพิ่ม ${invIds.length} วัตถุดิบแล้ว`, msg: 'ปรับปริมาณตามสูตรจริง' });
   };
 
-  const saveRecipe = async () => {
-    if (!selectedId) return;
+  const saveRecipe = async (): Promise<boolean> => {
+    if (!selectedId) return false;
     try {
       await Promise.all([
         updateRecipe.mutateAsync({ productId: selectedId, items: editedRecipe }),
@@ -129,9 +137,69 @@ export default function BOMBuilder() {
         }),
       ]);
       toast({ kind: 'success', title: 'บันทึกสูตรแล้ว', msg: `${selectedProduct?.name ?? ''} • ${editedRecipe.length} วัตถุดิบ • ต้นทุน${isProduced ? '/ชิ้น' : ''} ฿${costPerUnit.toFixed(2)} • Margin ${marginPct.toFixed(1)}%` });
+      return true;
     } catch (err) {
       toast({ kind: 'warning', title: 'บันทึกไม่สำเร็จ', msg: err instanceof Error ? err.message : 'กรุณาลองใหม่' });
+      return false;
     }
+  };
+
+  // ── Unsaved-changes detection ───────────────────────────────────────────────
+  // Compare the in-progress edits against the loaded recipe. Mirrors exactly
+  // what saveRecipe() persists (recipe rows, price, category, batch size).
+  const recipeDirty = (() => {
+    const orig = productDetail?.recipe ?? [];
+    if (orig.length !== editedRecipe.length) return true;
+    return editedRecipe.some((r, i) => r.invId !== orig[i].invId || Number(r.qty) !== Number(orig[i].qty));
+  })();
+  const priceDirty = !!productDetail && editedPrice !== productDetail.price;
+  const categoryDirty = !!selectedProduct && editedCategoryId !== (selectedProduct.cat ?? '');
+  const servingsDirty = isProduced && editedServingsPerBatch !== Math.max(1, selectedProduct?.servingsPerBatch ?? 1);
+  const isDirty = !!selectedProduct && !!productDetail && !detailLoading &&
+    (recipeDirty || priceDirty || categoryDirty || servingsDirty);
+  isDirtyRef.current = isDirty;
+
+  // Register a navigation guard so leaving the screen (sidebar) prompts to save.
+  useEffect(() => {
+    registerNavGuard((proceed) => {
+      if (isDirtyRef.current) {
+        setPendingNav(() => proceed);
+        return true; // intercepted — modal will run proceed() on confirm
+      }
+      return false;
+    });
+    return () => registerNavGuard(null);
+  }, [registerNavGuard]);
+
+  // Browser-level guard (refresh / close tab) while there are unsaved edits.
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isDirty]);
+
+  const proceedNav = () => {
+    const go = pendingNav;
+    setPendingNav(null);
+    go?.();
+  };
+
+  const handleSaveAndLeave = async () => {
+    setSavingLeave(true);
+    const ok = await saveRecipe();
+    setSavingLeave(false);
+    if (ok) proceedNav();
+  };
+
+  // Switching to another menu in the list also discards edits — guard it too.
+  const requestSelect = (id: string) => {
+    if (id === selectedId) return;
+    if (isDirtyRef.current) {
+      setPendingNav(() => () => setSelectedId(id));
+      return;
+    }
+    setSelectedId(id);
   };
 
   const submitAddMenu = async ({ name, categoryId, price, description, type, apiProductType, servingsPerBatch }: { name: string; categoryId: string; price: number; description: string; type: ProductType; apiProductType: ApiProductType; servingsPerBatch: number }) => {
@@ -200,7 +268,7 @@ export default function BOMBuilder() {
                 onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = 'var(--color-surface-2)'; }}
                 onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
               >
-                <button onClick={() => setSelectedId(m.id)} style={{
+                <button onClick={() => requestSelect(m.id)} style={{
                   display: 'flex', gap: 12, alignItems: 'center', flex: 1, minWidth: 0, padding: 10,
                   background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
                 }}>
@@ -320,6 +388,15 @@ export default function BOMBuilder() {
           deleting={deleteProduct.isPending}
           onConfirm={handleDelete}
           onClose={() => setDeleteTarget(null)}
+        />
+      )}
+      {pendingNav && (
+        <UnsavedChangesModal
+          name={selectedProduct?.name ?? ''}
+          saving={savingLeave}
+          onSave={handleSaveAndLeave}
+          onDiscard={proceedNav}
+          onCancel={() => setPendingNav(null)}
         />
       )}
       {modifierGroupPickerOpen && selectedId && (
@@ -985,6 +1062,26 @@ const DeleteConfirmModal = ({ name, deleting, onConfirm, onClose }: {
       <button onClick={onClose} style={{ padding: '10px 16px', fontSize: 13, fontWeight: 600, background: 'transparent', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit' }}>ยกเลิก</button>
       <button onClick={onConfirm} disabled={deleting} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 16px', fontSize: 13, fontWeight: 600, background: deleting ? 'var(--color-surface-2)' : 'var(--color-danger)', color: deleting ? 'var(--color-text-muted)' : '#fff', border: 'none', borderRadius: 8, cursor: deleting ? 'not-allowed' : 'pointer', fontFamily: 'inherit', transition: 'background 150ms var(--ease-out)' }}>
         <Icon name="trash" size={14} />{deleting ? 'กำลังลบ...' : 'ยืนยันลบ'}
+      </button>
+    </BomModalActions>
+  </BomModalShell>
+);
+
+const UnsavedChangesModal = ({ name, saving, onSave, onDiscard, onCancel }: {
+  name: string; saving: boolean;
+  onSave: () => void; onDiscard: () => void; onCancel: () => void;
+}) => (
+  <BomModalShell title="ยังไม่ได้บันทึกการเปลี่ยนแปลง" subtitle={name ? `สูตร "${name}"` : undefined} onClose={onCancel}>
+    <div style={{ fontSize: 14, color: 'var(--color-text-secondary)', marginBottom: 20, lineHeight: 1.7 }}>
+      คุณแก้ไขวัตถุดิบ/สูตรของรายการนี้ แต่ยังไม่ได้กดบันทึก หากออกจากหน้านี้ตอนนี้ การเปลี่ยนแปลงทั้งหมดจะหายไป — ต้องการบันทึกก่อนหรือไม่?
+    </div>
+    <BomModalActions>
+      <button onClick={onDiscard} disabled={saving} style={{ marginRight: 'auto', padding: '10px 16px', fontSize: 13, fontWeight: 600, background: 'transparent', color: 'var(--color-danger)', border: '1px solid var(--color-danger)', borderRadius: 8, cursor: saving ? 'not-allowed' : 'pointer', fontFamily: 'inherit', opacity: saving ? 0.5 : 1, transition: 'background 150ms var(--ease-out)' }} onMouseEnter={e => { if (!saving) e.currentTarget.style.background = 'var(--color-danger-50)'; }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+        ออกโดยไม่บันทึก
+      </button>
+      <button onClick={onCancel} disabled={saving} style={{ padding: '10px 16px', fontSize: 13, fontWeight: 600, background: 'transparent', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)', borderRadius: 8, cursor: saving ? 'not-allowed' : 'pointer', fontFamily: 'inherit' }}>ยกเลิก</button>
+      <button onClick={onSave} disabled={saving} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 16px', fontSize: 13, fontWeight: 600, background: saving ? 'var(--color-surface-2)' : 'var(--color-primary)', color: saving ? 'var(--color-text-muted)' : '#fff', border: 'none', borderRadius: 8, cursor: saving ? 'not-allowed' : 'pointer', fontFamily: 'inherit', transition: 'background 150ms var(--ease-out)' }} onMouseEnter={e => { if (!saving) e.currentTarget.style.background = 'var(--color-primary-700)'; }} onMouseLeave={e => { if (!saving) e.currentTarget.style.background = 'var(--color-primary)'; }}>
+        <Icon name="check" size={14} />{saving ? 'กำลังบันทึก...' : 'บันทึกแล้วออก'}
       </button>
     </BomModalActions>
   </BomModalShell>

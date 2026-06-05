@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ToastProvider, Sidebar, BottomTabBar } from '@/components/app-common';
+import { NavGuardProvider, type NavGuardFn } from '@/components/nav-guard';
 import { getToken, clearToken, subscribeAuth } from '@/lib/token-store';
 import LoginScreen from '@/components/screens/login';
 import POSTerminal from '@/components/screens/pos';
@@ -36,6 +37,21 @@ export default function POS() {
   const [screen, setScreen] = useState<Screen>('pos');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const queryClient = useQueryClient();
+
+  // Active navigation guard — a screen (e.g. BOM Builder) can register one to
+  // intercept navigation when it has unsaved changes.
+  const navGuardRef = useRef<NavGuardFn | null>(null);
+  const registerNavGuard = useCallback((fn: NavGuardFn | null) => {
+    navGuardRef.current = fn;
+  }, []);
+
+  const handleNavigate = useCallback((s: Screen) => {
+    if (s === screen) return;
+    const guard = navGuardRef.current;
+    // If a guard intercepts, it shows its own prompt and calls proceed() later.
+    if (guard && guard(() => setScreen(s))) return;
+    setScreen(s);
+  }, [screen]);
 
   useEffect(() => {
     setIsLoggedIn(!!getToken());
@@ -89,12 +105,14 @@ export default function POS() {
 
   return (
     <ToastProvider>
-      <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
-        <Sidebar current={screen} onNavigate={(s) => setScreen(s as Screen)} onLogout={handleLogout} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(v => !v)} />
-        <main style={{ flex: 1, minWidth: 0, position: 'relative', overflow: 'auto' }}>
-          {screens[screen]}
-        </main>
-      </div>
+      <NavGuardProvider value={registerNavGuard}>
+        <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
+          <Sidebar current={screen} onNavigate={(s) => handleNavigate(s as Screen)} onLogout={handleLogout} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(v => !v)} />
+          <main style={{ flex: 1, minWidth: 0, position: 'relative', overflow: 'auto' }}>
+            {screens[screen]}
+          </main>
+        </div>
+      </NavGuardProvider>
     </ToastProvider>
   );
 }
