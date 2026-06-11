@@ -6,6 +6,7 @@ import { useToast, baht } from '../app-common';
 import { useAllProducts, useCategories, type MenuItem } from '@/hooks/use-products';
 import { useProductDetail } from '@/hooks/use-bom';
 import { useCreateOrder, usePayOrder } from '@/hooks/use-orders';
+import { ApiError } from '@/lib/api-client';
 import { useEvaluatePromotions, type EligiblePromotion } from '@/hooks/use-promotions';
 import ModifierModal from './modifier-modal';
 import PaymentModal from './payment-modal';
@@ -171,6 +172,9 @@ export default function POSTerminal() {
   };
 
   const onPaid = () => {
+    // Re-entrancy guard: ignore the call if an order/payment is already being
+    // created, so a double-submit can't produce a duplicate (or empty) order.
+    if (createOrder.isPending || payOrder.isPending) return;
     const method = payment;
     const cartSnapshot = [...cart];
     const subtotalSnapshot = subtotal;
@@ -227,21 +231,45 @@ export default function POSTerminal() {
           pointsEarned: hasMember ? earned : undefined,
           rewardRedeemed: order.reward_redeemed,
         });
+      }).catch((payErr: unknown) => {
+        // The order WAS created (it's already in the kitchen) but recording the
+        // payment failed. Do NOT restore the cart — re-submitting would create a
+        // duplicate order. Tell the cashier to settle the existing bill instead.
+        const pmsg = payErr instanceof Error ? payErr.message : 'กรุณาลองใหม่';
+        toast({
+          kind: 'warning',
+          title: 'สร้างบิลแล้ว แต่ชำระเงินไม่สำเร็จ',
+          msg: `บิล ${order.order_number} ถูกส่งครัวแล้ว — ${pmsg} กรุณาเก็บเงินบิลนี้จากระบบ (อย่าสร้างบิลใหม่)`,
+          duration: 6000,
+        });
       })
     ).catch((err: unknown) => {
+      // Reached only when createOrder itself failed — the order was NOT created,
+      // so it is safe to restore the cart and let the cashier retry. Restoring the
+      // cart also re-triggers POST /evaluate (the backend re-validates promotions/
+      // membership at checkout — e.g. a HAPPY_HOUR that just expired), refreshing
+      // eligibility so the cashier sees the current promos before trying again.
       const msg = err instanceof Error ? err.message : 'กรุณาแจ้งผู้จัดการ';
-      // Backend re-validates promotions at checkout — surface a specific message if a promo was rejected.
-      const promoIssue = promoSnapshot.length > 0 && /promo|โปร|exclusive|expir|หมดอายุ|active|window|เวลา/i.test(msg);
+      setCart(cartSnapshot);
+      setMemberInfo(memberSnapshot);
+      setSelectedPromoIds(promoSnapshot);
+      // 422 = checkout re-validation rejected the order (stale promo/membership state).
+      const isValidation = err instanceof ApiError && err.status === 422;
+      const promoIssue = isValidation && promoSnapshot.length > 0;
       toast({
         kind: 'warning',
         title: promoIssue ? 'โปรโมชั่นใช้ไม่ได้' : 'บิลบันทึกไม่สำเร็จ',
-        msg: promoIssue ? `${msg} — กรุณาตรวจสอบโปรโมชั่นแล้วลองใหม่` : msg,
+        msg: promoIssue
+          ? `${msg} — รีเฟรชโปรโมชั่นให้แล้ว กรุณาตรวจสอบแล้วลองใหม่`
+          : `${msg} — กู้คืนตะกร้าให้แล้ว ลองใหม่อีกครั้ง`,
         duration: 4500,
       });
     });
   };
 
   const cartCount = cart.reduce((s, l) => s + l.qty, 0);
+  // Order/payment being recorded — pay buttons show a spinner and lock out re-entry.
+  const paying = createOrder.isPending || payOrder.isPending;
 
   return (
     <div style={{display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', background: 'var(--color-bg)'}}>
@@ -306,14 +334,13 @@ export default function POSTerminal() {
                 </div>
                 <input type="text" placeholder="ค้นหาเมนู ชื่อ หรือ hotkey..."
                   value={search} onChange={(e) => setSearch(e.target.value)}
+                  className="input-std"
                   style={{
-                    width: '100%', padding: '10px 12px 10px 36px',
+                    width: '100%', padding: '10px 12px 10px 36px', minHeight: 44,
                     background: 'var(--color-surface)',
                     border: '1px solid var(--color-border)', borderRadius: 8,
                     fontSize: 14, outline: 'none',
                   }}
-                  onFocus={(e) => e.target.style.boxShadow = 'var(--shadow-focus)'}
-                  onBlur={(e) => e.target.style.boxShadow = 'none'}
                 />
               </div>
             </div>
@@ -321,7 +348,11 @@ export default function POSTerminal() {
               <CategoryTab label="★ ขายดี" active={category === 'fav'} onClick={() => { setCategory('fav'); setSearch(''); }} highlight />
               <CategoryTab label="ทั้งหมด" active={category === 'all'} onClick={() => { setCategory('all'); setSearch(''); }} />
               {catsLoading && !categories ? (
-                <div style={{ padding: '8px 14px', fontSize: 13, color: 'var(--color-text-muted)' }}>กำลังโหลด...</div>
+                <div aria-hidden style={{ display: 'flex', gap: 6 }}>
+                  {[72, 96, 80, 88].map((w, i) => (
+                    <div key={i} className="skeleton" style={{ width: w, height: 38, borderRadius: 'var(--radius-pill)', flexShrink: 0 }} />
+                  ))}
+                </div>
               ) : (
                 (categories ?? []).map((c) => (
                   <CategoryTab key={c.id} label={c.label} active={category === c.id} onClick={() => { setCategory(c.id); setSearch(''); }} />
@@ -337,18 +368,43 @@ export default function POSTerminal() {
                 ไม่สามารถโหลดเมนูได้ กรุณาตรวจสอบการเชื่อมต่อ
               </div>
             ) : prodLoading ? (
-              <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 60, color: 'var(--color-text-muted)'}}>
-                กำลังโหลดเมนู...
+              /* Skeleton grid mirrors the real card layout so there is no layout shift */
+              <div aria-hidden className="grid grid-cols-2 md:grid-cols-[repeat(auto-fill,minmax(160px,1fr))]" style={{gap: 12}}>
+                <span className="sr-only">กำลังโหลดเมนู...</span>
+                {Array.from({ length: 8 }).map((_, i) => (
+                  <div key={i} style={{
+                    background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+                    borderRadius: 12, overflow: 'hidden',
+                  }}>
+                    <div className="skeleton" style={{ aspectRatio: '4 / 3', borderRadius: 0 }} />
+                    <div style={{ padding: '10px 12px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div className="skeleton" style={{ height: 13, width: '80%' }} />
+                      <div className="skeleton" style={{ height: 15, width: '45%' }} />
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : (
               <>
-                <div className="grid grid-cols-2 md:grid-cols-[repeat(auto-fill,minmax(160px,1fr))]" style={{gap: 12}}>
+                {/* keyed by category/search so the grid cross-fades on every filter change */}
+                <div key={`${category}:${search.trim()}`} className="fade-in grid grid-cols-2 md:grid-cols-[repeat(auto-fill,minmax(160px,1fr))]" style={{gap: 12}}>
                   {filtered.map((m) => <MenuCard key={m.id} item={m} onClick={() => onMenuClick(m)} />)}
                 </div>
                 {filtered.length === 0 && (
-                  <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 60, color: 'var(--color-text-muted)'}}>
-                    <div style={{marginBottom: 8}}><Icon name="search" size={32}/></div>
-                    ไม่พบเมนูที่ค้นหา
+                  <div className="fade-in" style={{display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 'var(--space-16) var(--space-6)', textAlign: 'center', color: 'var(--color-text-muted)'}}>
+                    <div style={{
+                      width: 64, height: 64, borderRadius: 'var(--radius-pill)',
+                      background: 'var(--color-surface-2)', display: 'grid', placeItems: 'center',
+                      marginBottom: 'var(--space-4)',
+                    }}>
+                      <Icon name={search.trim() ? 'search' : 'coffee'} size={28}/>
+                    </div>
+                    <div style={{fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 'var(--space-1)'}}>
+                      {search.trim() ? 'ไม่พบเมนูที่ค้นหา' : 'ยังไม่มีสินค้าในหมวดนี้'}
+                    </div>
+                    <div style={{fontSize: 13}}>
+                      {search.trim() ? 'ลองค้นหาด้วยคำอื่น หรือตรวจสอบตัวสะกดอีกครั้ง' : 'เพิ่มสินค้าได้ที่เมนู Catalog'}
+                    </div>
                   </div>
                 )}
               </>
@@ -379,22 +435,23 @@ export default function POSTerminal() {
                       {memberInfo.account.points_balance.toLocaleString()} แต้ม{memberInfo.redeemReward ? ' • แลกรางวัล' : ''}
                     </div>
                   </div>
-                  <button onClick={() => setMemberInfo(null)} title="นำสมาชิกออก"
+                  <button onClick={() => setMemberInfo(null)} title="นำสมาชิกออก" aria-label="นำสมาชิกออก"
+                    className="hit-44 pressable"
                     style={{width: 22, height: 22, borderRadius: 999, display: 'grid', placeItems: 'center', color: 'var(--color-accent-600)'}}>
                     <Icon name="x" size={13} />
                   </button>
                 </div>
               ) : (
                 <>
-                  <button className="btn btn-ghost" style={{padding: '8px 12px', fontSize: 12}} onClick={() => { setMembershipPhase('lookup'); setShowMembership(true); }}>
+                  <button className="btn btn-ghost" style={{padding: '8px 12px', fontSize: 12, minHeight: 44}} onClick={() => { setMembershipPhase('lookup'); setShowMembership(true); }}>
                     <Icon name="user" size={14}/> ลูกค้า
                   </button>
-                  <button className="btn btn-ghost" style={{padding: '8px 12px', fontSize: 12}} title="สมัครสมาชิกใหม่" onClick={() => { setMembershipPhase('register'); setShowMembership(true); }}>
-                    <Icon name="userPlus" size={14}/> สมัครสมาชิก
+                  <button className="btn btn-ghost" style={{padding: '8px 12px', fontSize: 12, whiteSpace: 'nowrap', minHeight: 44}} onClick={() => { setMembershipPhase('register'); setShowMembership(true); }}>
+                    <Icon name="plus" size={14}/> สมัครสมาชิก
                   </button>
                 </>
               )}
-              <button className="btn btn-ghost" style={{padding: 8}} title="Park bill">
+              <button className="btn btn-ghost" style={{padding: 8, minHeight: 44, minWidth: 44}} title="Park bill" aria-label="Park bill">
                 <Icon name="park" size={16}/>
               </button>
             </div>
@@ -430,13 +487,13 @@ export default function POSTerminal() {
 
             <div style={{padding: '0 20px 20px', display: 'grid', gap: 8}}>
               <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8}}>
-                <PayButton icon="cash"  label="เงินสด"      onClick={() => cart.length && setPayment('cash')} disabled={!cart.length} />
-                <PayButton icon="card"  label="บัตร"         onClick={() => cart.length && setPayment('card')} disabled={!cart.length} />
-                <PayButton icon="qr"    label="QR PromptPay" onClick={() => cart.length && setPayment('qr')}   disabled={!cart.length} primary />
-                <PayButton icon="line"  label="LINE Pay"     onClick={() => cart.length && setPayment('line')} disabled={!cart.length} />
+                <PayButton icon="cash"  label="เงินสด"      onClick={() => cart.length && setPayment('cash')} disabled={!cart.length} pending={paying} />
+                <PayButton icon="card"  label="บัตร"         onClick={() => cart.length && setPayment('card')} disabled={!cart.length} pending={paying} />
+                <PayButton icon="qr"    label="QR PromptPay" onClick={() => cart.length && setPayment('qr')}   disabled={!cart.length} pending={paying} primary />
+                <PayButton icon="line"  label="LINE Pay"     onClick={() => cart.length && setPayment('line')} disabled={!cart.length} pending={paying} />
               </div>
               <div style={{display: 'flex', gap: 8, marginTop: 4}}>
-                <button className="btn btn-ghost" style={{flex: 1, fontSize: 12, padding: 8, opacity: eligiblePromos.length ? 1 : 0.5}}
+                <button className="btn btn-ghost" style={{flex: 1, fontSize: 12, padding: 8, minHeight: 44, opacity: eligiblePromos.length ? 1 : 0.5}}
                   onClick={() => eligiblePromos.length && setShowPromoPanel(true)} disabled={!eligiblePromos.length}>
                   <Icon name="discount" size={14}/> โปรโมชั่น
                   {eligiblePromos.length > 0 && (
@@ -445,7 +502,7 @@ export default function POSTerminal() {
                     </span>
                   )}
                 </button>
-                <button className="btn btn-ghost" style={{flex: 1, fontSize: 12, padding: 8}} onClick={() => cart.length && clearCart()}>
+                <button className="btn btn-ghost" style={{flex: 1, fontSize: 12, padding: 8, minHeight: 44}} onClick={() => cart.length && clearCart()}>
                   <Icon name="void" size={14}/> Void
                 </button>
               </div>
@@ -479,7 +536,7 @@ export default function POSTerminal() {
           <div onClick={e => e.stopPropagation()} style={{ background: 'var(--color-surface)', borderRadius: '16px 16px 0 0', width: '100%', maxWidth: 520, maxHeight: '70vh', overflowY: 'auto', padding: 20, boxShadow: '0 -8px 30px rgba(0,0,0,0.2)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <div style={{ fontSize: 16, fontWeight: 700 }}>โปรโมชั่นที่ใช้ได้</div>
-              <button onClick={() => setShowPromoPanel(false)} style={{ width: 30, height: 30, borderRadius: 8, display: 'grid', placeItems: 'center' }}><Icon name="x" size={16} /></button>
+              <button onClick={() => setShowPromoPanel(false)} aria-label="ปิด" className="icon-btn hit-44" style={{ width: 32, height: 32, borderRadius: 8, display: 'grid', placeItems: 'center' }}><Icon name="x" size={16} /></button>
             </div>
             {eligiblePromos.length === 0 ? (
               <div style={{ padding: 24, textAlign: 'center', color: 'var(--color-text-muted)' }}>ไม่มีโปรโมชั่นที่ใช้ได้กับตะกร้านี้</div>
@@ -502,7 +559,7 @@ export default function POSTerminal() {
                 })}
               </div>
             )}
-            <button onClick={() => setShowPromoPanel(false)} style={{ marginTop: 16, width: '100%', padding: 12, borderRadius: 10, background: 'var(--color-primary)', color: 'white', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
+            <button onClick={() => setShowPromoPanel(false)} className="pressable" style={{ marginTop: 16, width: '100%', padding: 12, minHeight: 48, borderRadius: 10, background: 'var(--color-primary)', color: 'white', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
               ใช้ส่วนลด{promoDiscount > 0 ? ` (-${baht(promoDiscount)})` : ''}
             </button>
           </div>
@@ -510,6 +567,27 @@ export default function POSTerminal() {
       )}
       {payment && (
         <PaymentModal method={payment} total={total} billNo={billNo} onClose={() => setPayment(null)} onPaid={onPaid} />
+      )}
+      {/* Gap between payment success and the receipt being ready (order + payment
+          round-trips). Without this the screen looks frozen — show the receipt
+          modal's backdrop with a spinner so the receipt feels like it's loading in. */}
+      {paying && !receiptData && !payment && (
+        <div className="fade-in" style={{
+          position: 'fixed', inset: 0, zIndex: 300,
+          background: 'rgba(20, 12, 6, 0.75)', backdropFilter: 'blur(6px)',
+          display: 'grid', placeItems: 'center', padding: 20,
+        }}>
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-4)',
+            color: 'white', textAlign: 'center',
+          }}>
+            <span className="spinner" style={{ width: 36, height: 36, borderWidth: 3 }} aria-hidden />
+            <div role="status" aria-live="polite">
+              <div style={{ fontSize: 16, fontWeight: 700 }}>กำลังเตรียมใบเสร็จ...</div>
+              <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.65)', marginTop: 4 }}>บันทึกบิลและส่งไปยังครัว</div>
+            </div>
+          </div>
+        </div>
       )}
       {receiptData && (
         <ReceiptModal
@@ -533,25 +611,20 @@ export default function POSTerminal() {
 }
 
 const CategoryTab = ({ label, active, onClick, highlight }: { label: string; active: boolean; onClick: () => void; highlight?: boolean }) => (
-  <button onClick={onClick} style={{
-    padding: '8px 14px', borderRadius: 999,
+  <button onClick={onClick} className="pressable hit-44" aria-pressed={active} style={{
+    padding: '9px 16px', borderRadius: 999, minHeight: 38,
     background: active ? 'var(--color-primary)' : (highlight ? 'var(--color-accent-50)' : 'var(--color-surface)'),
     color: active ? 'white' : (highlight ? 'var(--color-primary-700)' : 'var(--color-text-secondary)'),
     border: `1px solid ${active ? 'var(--color-primary)' : 'var(--color-border)'}`,
     fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
-    transition: 'all 150ms var(--ease-out)',
   }}>{label}</button>
 );
 
 const MenuCard = ({ item, onClick }: { item: MenuItem; onClick: () => void }) => (
-  <button onClick={onClick} style={{
-    background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+  <button onClick={onClick} className="menu-card" style={{
     borderRadius: 12, overflow: 'hidden', display: 'flex', flexDirection: 'column',
-    textAlign: 'left', transition: 'all 150ms var(--ease-out)', position: 'relative',
-  }}
-    onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = 'var(--shadow-md)'; e.currentTarget.style.borderColor = 'var(--color-accent)'; }}
-    onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.borderColor = 'var(--color-border)'; }}
-  >
+    textAlign: 'left', position: 'relative',
+  }}>
     <div style={{
       aspectRatio: '4 / 3',
       background: `linear-gradient(135deg, ${item.color} 0%, ${item.color}cc 100%)`,
@@ -599,20 +672,20 @@ const CartLine = ({ line, onInc, onDec, onRemove }: { line: CartLine; onInc: () 
         </div>
       )}
     </div>
-    <div style={{display: 'flex', alignItems: 'center', gap: 6}}>
-      <button onClick={onDec} style={qtyBtnStyle}><Icon name="minus" size={14}/></button>
+    <div style={{display: 'flex', alignItems: 'center', gap: 8}}>
+      <button onClick={onDec} className="pressable hit-44" aria-label="ลดจำนวน" style={qtyBtnStyle}><Icon name="minus" size={14}/></button>
       <div className="num" style={{minWidth: 20, textAlign: 'center', fontWeight: 600}}>{line.qty}</div>
-      <button onClick={onInc} style={qtyBtnStyle}><Icon name="plus" size={14}/></button>
+      <button onClick={onInc} className="pressable hit-44" aria-label="เพิ่มจำนวน" style={qtyBtnStyle}><Icon name="plus" size={14}/></button>
     </div>
     <div style={{minWidth: 64, textAlign: 'right'}}>
       <div className="num" style={{fontWeight: 600, fontSize: 14}}>฿{(line.unitPrice * line.qty).toLocaleString()}</div>
-      <button onClick={onRemove} style={{fontSize: 11, color: 'var(--color-danger)', marginTop: 2}}>ลบ</button>
+      <button onClick={onRemove} className="hit-44" style={{fontSize: 11, color: 'var(--color-danger)', marginTop: 2, position: 'relative'}}>ลบ</button>
     </div>
   </div>
 );
 
 const qtyBtnStyle: React.CSSProperties = {
-  width: 28, height: 28, borderRadius: 6,
+  width: 34, height: 34, borderRadius: 6,
   background: 'var(--color-surface-2)',
   display: 'grid', placeItems: 'center',
 };
@@ -624,23 +697,23 @@ const Row = ({ label, value, muted }: { label: string; value: string; muted?: bo
   </div>
 );
 
-const PayButton = ({ icon, label, onClick, disabled, primary }: { icon: string; label: string; onClick: () => void; disabled: boolean; primary?: boolean }) => (
-  <button onClick={onClick} disabled={disabled}
-    style={{
-      padding: '14px 12px', borderRadius: 8,
-      background: disabled ? 'var(--color-surface-2)' : (primary ? 'var(--color-primary)' : 'var(--color-surface)'),
-      color: disabled ? 'var(--color-text-muted)' : (primary ? 'white' : 'var(--color-text)'),
-      border: `1px solid ${primary ? 'var(--color-primary)' : 'var(--color-border)'}`,
-      fontWeight: 600, fontSize: 14,
-      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
-      minHeight: 64,
-      cursor: disabled ? 'not-allowed' : 'pointer',
-      transition: 'all 150ms var(--ease-out)',
-    }}
-    onMouseEnter={(e) => { if (!disabled) { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; } }}
-    onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
-  >
-    <Icon name={icon} size={20}/>
-    <span style={{fontSize: 12}}>{label}</span>
-  </button>
-);
+const PayButton = ({ icon, label, onClick, disabled, primary, pending }: { icon: string; label: string; onClick: () => void; disabled: boolean; primary?: boolean; pending?: boolean }) => {
+  const off = disabled || pending;
+  return (
+    <button onClick={onClick} disabled={off} className="hover-raise" aria-busy={pending || undefined}
+      style={{
+        padding: '14px 12px', borderRadius: 8,
+        background: off ? 'var(--color-surface-2)' : (primary ? 'var(--color-primary)' : 'var(--color-surface)'),
+        color: off ? 'var(--color-text-muted)' : (primary ? 'white' : 'var(--color-text)'),
+        border: `1px solid ${primary && !off ? 'var(--color-primary)' : 'var(--color-border)'}`,
+        fontWeight: 600, fontSize: 14,
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
+        minHeight: 64,
+        cursor: off ? 'not-allowed' : 'pointer',
+      }}
+    >
+      {pending ? <span className="spinner" style={{width: 18, height: 18}} aria-hidden /> : <Icon name={icon} size={20}/>}
+      <span style={{fontSize: 12}}>{pending ? 'กำลังบันทึก...' : label}</span>
+    </button>
+  );
+};

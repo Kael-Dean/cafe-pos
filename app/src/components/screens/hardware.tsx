@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Icon from '../icons';
 import { useToast } from '../app-common';
 import { ReceiptPaper, type ReceiptData, type StoreInfo } from './receipt-modal';
-import { fetchStatus, fetchConfig, saveConfig, scanPrinters } from '@/lib/printer-bridge';
+import { fetchStatus, fetchConfig, saveConfig, listPrinters } from '@/lib/printer-bridge';
 import { usePrinter } from '@/hooks/use-printer';
 
 type PrinterStatus = 'online' | 'offline' | 'checking';
@@ -33,19 +33,22 @@ const FMT      = (n: number) => n.toLocaleString('th-TH', { minimumFractionDigit
 const FMT_DATE = (d: Date)   => d.toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' });
 const FMT_TIME = (d: Date)   => d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
+// Match the bridge's AN581 auto-detect so the "ค้นหาใหม่" button picks the same printer.
+const matchAn581 = (names: string[]) =>
+  names.find(n => /an[\s_-]?581/i.test(n)) ??
+  names.find(n => /(58mm|pos[\s_-]?58|thermal|receipt|gprinter|xprinter|rongta)/i.test(n)) ??
+  null;
+
 /* ─────────────────────────────────────────────────────────────────── */
 
 export default function HardwareScreen() {
   const toast = useToast();
   const { printReceipt } = usePrinter();
-  const [printer, setPrinter]     = useState<PrinterStatus>('checking');
-  const [printerIp, setPrinterIp] = useState('');
-  const [ipInput, setIpInput]     = useState('');
-  const [saving, setSaving]       = useState(false);
-  const [scanning, setScanning]   = useState(false);
-  const [scanResults, setScanResults] = useState<string[]>([]);
-  const [testing, setTesting]     = useState(false);
-  const [lastPrint, setLastPrint] = useState<string | null>(null);
+  const [printer, setPrinter]       = useState<PrinterStatus>('checking');
+  const [printerName, setPrinterName] = useState('AN581-C'); // resolved USB printer name
+  const [detecting, setDetecting]   = useState(false);
+  const [testing, setTesting]       = useState(false);
+  const [lastPrint, setLastPrint]   = useState<string | null>(null);
 
   const [storeInput, setStoreInput]     = useState('');
   const [addressInput, setAddressInput] = useState('');
@@ -67,52 +70,48 @@ export default function HardwareScreen() {
 
   /* ── API ── */
 
+  // USB-only: the bridge auto-resolves the AN581 and reports it as online whenever the
+  // driver is installed + USB plugged in — so this stays online across idle and reboot.
   const checkStatus = useCallback(async () => {
     setPrinter('checking');
     try {
-      const data = await fetchStatus(AbortSignal.timeout(5000));
+      const data = await fetchStatus(AbortSignal.timeout(8000));
       setPrinter(data.printer ? 'online' : 'offline');
-      if (data.ip) { setPrinterIp(data.ip); setIpInput(data.ip); }
+      if (data.printerName) setPrinterName(data.printerName);
     } catch { setPrinter('offline'); }
   }, []);
 
+  // Manual "ค้นหาใหม่": only needed after a fresh driver install / printer rename.
+  // Forces USB mode, finds the AN581 among installed printers, saves it, re-checks.
+  const detectPrinter = useCallback(async () => {
+    setDetecting(true);
+    try {
+      const found = matchAn581(await listPrinters(AbortSignal.timeout(15000)));
+      await saveConfig(found ? { mode: 'usb', printerName: found } : { mode: 'usb' });
+      if (found) {
+        setPrinterName(found);
+        toast({ kind: 'success', title: 'เชื่อมต่อแล้ว', msg: found });
+      } else {
+        toast({ kind: 'warning', title: 'ไม่พบ AN581-C', msg: 'เสียบสาย USB และติดตั้งไดรเวอร์เครื่องพิมพ์แล้วลองใหม่' });
+      }
+      await checkStatus();
+    } catch (err: unknown) {
+      toast({ kind: 'warning', title: 'เชื่อมต่อไม่สำเร็จ', msg: (err as Error).message });
+    } finally { setDetecting(false); }
+  }, [checkStatus, toast]);
+
   useEffect(() => {
     fetchConfig().then(cfg => {
-      setPrinterIp(cfg.ip              ?? '');
-      setIpInput(cfg.ip                ?? '');
+      if (cfg.printerName) setPrinterName(cfg.printerName);
       setStoreInput(cfg.storeName      ?? '');
       setAddressInput(cfg.storeAddress ?? '');
       setTaxIdInput(cfg.storeTaxId     ?? '');
       setBranchInput(cfg.storeBranch   ?? '');
+      // Lock this install to USB (AN581) — older configs may still be on LAN.
+      if (cfg.mode !== 'usb') saveConfig({ mode: 'usb' }).catch(() => {});
     }).catch(() => {});
     checkStatus();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const scanPrintersHandler = async () => {
-    setScanning(true); setScanResults([]);
-    try {
-      const data = await scanPrinters(AbortSignal.timeout(120000));
-      setScanResults(data.found ?? []);
-      if (data.found?.length === 1)  toast({ kind: 'success', title: 'พบเครื่องปริ้น', msg: data.found[0] });
-      else if (!data.found?.length)  toast({ kind: 'warning', title: 'ไม่พบเครื่องปริ้น', msg: 'ตรวจสอบว่าเปิดเครื่องและต่อสายแลนอยู่' });
-    } catch (err: unknown) {
-      toast({ kind: 'warning', title: 'scan ไม่สำเร็จ', msg: (err as Error).message });
-    } finally { setScanning(false); }
-  };
-
-  const saveIp = async () => {
-    const ip = ipInput.trim();
-    if (!ip) return;
-    setSaving(true);
-    try {
-      await saveConfig({ ip });
-      setPrinterIp(ip);
-      toast({ kind: 'success', title: 'บันทึกแล้ว', msg: `IP: ${ip}` });
-      checkStatus();
-    } catch (err: unknown) {
-      toast({ kind: 'warning', title: 'บันทึกไม่สำเร็จ', msg: (err as Error).message });
-    } finally { setSaving(false); }
-  };
 
   const saveStoreInfo = async () => {
     const name = storeInput.trim();
@@ -120,7 +119,6 @@ export default function HardwareScreen() {
     setSavingStore(true);
     try {
       await saveConfig({
-        ip: printerIp,
         storeName:    name,
         storeAddress: addressInput.trim() || null,
         storeTaxId:   taxIdInput.trim()   || null,
@@ -173,7 +171,7 @@ export default function HardwareScreen() {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
-        {/* Left column: printer + IP */}
+        {/* Left column: printer status + USB connection */}
         <div>
           {/* Printer status card */}
           <Section title="เครื่องพิมพ์">
@@ -186,11 +184,11 @@ export default function HardwareScreen() {
               </div>
               <div style={{ flex: 1 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                  <span style={{ fontWeight: 700, fontSize: 14 }}>EPSON TM-T82X</span>
+                  <span style={{ fontWeight: 700, fontSize: 14 }}>{printerName || 'เครื่องพิมพ์ USB'}</span>
                   <StatusDot s={printer} />
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
-                  IP: {printerIp || '—'} · กระดาษ 80mm · B&W thermal
+                  USB: {printerName || 'AN581-C'} · กระดาษ 58mm · B&W thermal
                   {lastPrint ? ` · พิมพ์ล่าสุด ${lastPrint}` : ''}
                 </div>
               </div>
@@ -210,40 +208,35 @@ export default function HardwareScreen() {
             </div>
             {printer === 'offline' && (
               <div style={{ marginTop: 10, padding: '8px 12px', background: 'var(--color-danger-50)', borderRadius: 6, fontSize: 12, color: 'var(--color-danger)' }}>
-                ออฟไลน์ — ตรวจสอบ IP และสายแลน
+                ออฟไลน์ — เสียบสาย USB เครื่องพิมพ์ AN581-C และติดตั้งไดรเวอร์แล้วกด “ค้นหาใหม่”
               </div>
             )}
           </Section>
 
-          {/* IP config */}
-          <Section title="IP เครื่องพิมพ์" desc="เปลี่ยน WiFi ก็แค่แก้ตรงนี้">
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input
-                value={ipInput} onChange={e => setIpInput(e.target.value)}
-                placeholder="192.168.1.129"
-                style={{ ...inputStyle, flex: 1, fontFamily: 'monospace' }}
-                onKeyDown={e => e.key === 'Enter' && saveIp()}
-              />
-              <button onClick={scanPrintersHandler} disabled={scanning} style={{ ...btnGhost, whiteSpace: 'nowrap' }}>
-                <Icon name="refresh" size={13} style={{ animation: scanning ? 'spin 1s linear infinite' : 'none' }} />
-                {scanning ? 'ค้นหา...' : 'ค้นหา'}
-              </button>
-              <button onClick={saveIp} disabled={saving || ipInput.trim() === printerIp}
-                style={{ ...btnAccent, opacity: (saving || ipInput.trim() === printerIp) ? 0.5 : 1 }}>
-                {saving ? 'บันทึก...' : 'บันทึก'}
+          {/* USB connection — locked to the AN581, auto-reconnects on boot */}
+          <Section title="การเชื่อมต่อ USB" desc="เครื่องพิมพ์ใบเสร็จ AN581-C ผ่านสาย USB">
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '10px 12px', borderRadius: 8,
+              background: 'var(--color-surface-2)', border: '1px solid var(--color-border)',
+            }}>
+              <Icon name="usb" size={18} color="var(--color-text-secondary)" />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>{printerName || 'AN581-C'}</div>
+                <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                  {printer === 'online'   ? 'พร้อมใช้งาน — เชื่อมต่ออัตโนมัติ'
+                   : printer === 'checking' ? 'กำลังตรวจสอบ...'
+                   : 'ยังไม่พบเครื่องพิมพ์'}
+                </div>
+              </div>
+              <button onClick={detectPrinter} disabled={detecting} style={{ ...btnGhost, opacity: detecting ? 0.6 : 1 }}>
+                <Icon name="refresh" size={13} style={{ animation: detecting ? 'spin 1s linear infinite' : 'none' }} />
+                {detecting ? 'กำลังค้นหา...' : 'ค้นหาใหม่'}
               </button>
             </div>
-            {scanResults.length > 1 && (
-              <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {scanResults.map(ip => (
-                  <button key={ip} onClick={() => setIpInput(ip)} style={{
-                    padding: '3px 10px', borderRadius: 6, fontSize: 12, fontFamily: 'monospace',
-                    border: `1px solid ${ipInput === ip ? 'var(--color-accent)' : 'var(--color-border)'}`,
-                    background: ipInput === ip ? 'var(--color-accent-50)' : 'var(--color-surface)',
-                  }}>{ip}</button>
-                ))}
-              </div>
-            )}
+            <div style={{ marginTop: 10, fontSize: 11, color: 'var(--color-text-secondary)' }}>
+              เสียบสาย USB เครื่องพิมพ์ AN581-C เข้ากับเครื่องนี้และติดตั้งไดรเวอร์ — ระบบจะเชื่อมต่อให้อัตโนมัติทุกครั้งที่เปิดเครื่อง ไม่ต้องตั้งค่าซ้ำ · ตัดกระดาษอัตโนมัติ
+            </div>
           </Section>
         </div>
 
@@ -412,10 +405,4 @@ const btnGhost: React.CSSProperties = {
   padding: '8px 12px', borderRadius: 8,
   border: '1px solid var(--color-border)', background: 'var(--color-surface-2)',
   fontSize: 13, fontWeight: 500, cursor: 'pointer', whiteSpace: 'nowrap',
-};
-const btnAccent: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', gap: 6,
-  padding: '8px 16px', borderRadius: 8,
-  background: 'var(--color-accent)', color: 'var(--color-primary-700)',
-  fontWeight: 600, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', border: 'none',
 };

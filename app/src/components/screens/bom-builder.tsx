@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Icon from '../icons';
 import { useToast, Tag, baht, Select, NumberInput } from '../app-common';
 import { useAllProducts, useCategories, useCreateProduct, useDeleteProduct, useUpdateProduct, type MenuItem, type Category } from '@/hooks/use-products';
@@ -9,7 +9,8 @@ import { useProductDetail, useUpdateRecipe, useLinkModifierGroups, type RecipeIt
 import { useModifierGroups, useCreateModifierGroup, useAddModifier, useDeleteModifier, DEFAULT_DRINK_MODIFIER_GROUPS, type ModifierGroup } from '@/hooks/use-modifier-groups';
 import { useCookingSteps, useReplaceCookingSteps, type CookingStepRead } from '@/hooks/use-cooking-steps';
 import { useCurrentUser, isAdmin } from '@/hooks/use-current-user';
-import { useNavGuard } from '../nav-guard';
+import { api } from '@/lib/api-client';
+import { setNavGuard } from '@/lib/nav-guard';
 
 type ProductType = 'MENU' | 'INGREDIENT';
 type ApiProductType = 'MADE_TO_ORDER' | 'PRODUCED';
@@ -21,11 +22,14 @@ export default function BOMBuilder() {
   const [picker, setPicker] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<MenuItem | null>(null);
+  const [duplicating, setDuplicating] = useState(false);
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
 
   const [editedRecipe, setEditedRecipe] = useState<RecipeItem[]>([]);
   const [editedPrice, setEditedPrice] = useState(0);
   const [editedServingsPerBatch, setEditedServingsPerBatch] = useState(1);
   const [editedCategoryId, setEditedCategoryId] = useState('');
+  const [isDirty, setIsDirty] = useState(false);
   const [productType, setProductType] = useState<ProductType>('MENU');
   const [modifierGroupPickerOpen, setModifierGroupPickerOpen] = useState(false);
 
@@ -48,18 +52,37 @@ export default function BOMBuilder() {
   const [editedSteps, setEditedSteps] = useState<CookingStepRead[]>([]);
   const [newStepText, setNewStepText] = useState('');
 
-  // Unsaved-changes guard: pendingNav holds the navigation to run once the user
-  // resolves the warning (save / leave / cancel).
-  const registerNavGuard = useNavGuard();
-  const [pendingNav, setPendingNav] = useState<(() => void) | null>(null);
-  const [savingLeave, setSavingLeave] = useState(false);
-  const isDirtyRef = useRef(false);
-
   useEffect(() => {
     if (!selectedId && products?.[0]) {
       setSelectedId(products[0].id);
     }
   }, [products, selectedId]);
+
+  // A freshly selected product starts clean; the load effects below only ever use
+  // the raw setters, so loading server data never flips the unsaved-changes flag.
+  useEffect(() => { setIsDirty(false); }, [selectedId]);
+
+  // Keep the latest dirty state in a ref so the stable nav guard always sees it.
+  const isDirtyRef = useRef(false);
+  useEffect(() => { isDirtyRef.current = isDirty; }, [isDirty]);
+
+  // Themed "discard unsaved changes?" dialog. confirmDiscard() shows it and resolves
+  // true (discard) / false (stay) when the user picks — replacing native window.confirm.
+  const [discardPrompt, setDiscardPrompt] = useState<{ resolve: (ok: boolean) => void } | null>(null);
+  const confirmDiscard = useCallback(
+    () => new Promise<boolean>(resolve => setDiscardPrompt({ resolve })),
+    [],
+  );
+  const settleDiscard = (ok: boolean) => {
+    discardPrompt?.resolve(ok);
+    setDiscardPrompt(null);
+  };
+
+  // Warn before leaving the BOM screen for another page when there are unsaved edits.
+  useEffect(() => {
+    setNavGuard(() => !isDirtyRef.current || confirmDiscard());
+    return () => setNavGuard(null);
+  }, [confirmDiscard]);
 
   useEffect(() => {
     if (productDetail) {
@@ -110,22 +133,42 @@ export default function BOMBuilder() {
   const margin = editedPrice - costPerUnit;
   const marginPct = editedPrice > 0 ? (margin / editedPrice) * 100 : 0;
 
-  const updateQty = (idx: number, qty: number) => setEditedRecipe(r => {
-    const next = [...r];
-    next[idx] = { ...next[idx], qty: Math.max(0, qty) };
-    return next;
-  });
+  // Edit handlers passed to the panel — each flags unsaved changes so switching
+  // menus warns before discarding (same guard as catalog.tsx).
+  const changePrice = (v: number) => { setEditedPrice(v); setIsDirty(true); };
+  const changeServingsPerBatch = (v: number) => { setEditedServingsPerBatch(v); setIsDirty(true); };
+  const changeCategory = (v: string) => { setEditedCategoryId(v); setIsDirty(true); };
 
-  const removeItem = (idx: number) => setEditedRecipe(r => r.filter((_, i) => i !== idx));
+  const updateQty = (idx: number, qty: number) => {
+    setEditedRecipe(r => {
+      const next = [...r];
+      next[idx] = { ...next[idx], qty: Math.max(0, qty) };
+      return next;
+    });
+    setIsDirty(true);
+  };
+
+  const removeItem = (idx: number) => {
+    setEditedRecipe(r => r.filter((_, i) => i !== idx));
+    setIsDirty(true);
+  };
 
   const addItems = (invIds: string[]) => {
     setEditedRecipe(r => [...r, ...invIds.map(id => ({ invId: id, qty: 1 }))]);
+    setIsDirty(true);
     setPicker(false);
     toast({ kind: 'info', title: `เพิ่ม ${invIds.length} วัตถุดิบแล้ว`, msg: 'ปรับปริมาณตามสูตรจริง' });
   };
 
-  const saveRecipe = async (): Promise<boolean> => {
-    if (!selectedId) return false;
+  // Guard menu switching: warn if there are unsaved edits before loading another product.
+  const selectProduct = async (id: string) => {
+    if (id === selectedId) return;
+    if (isDirty && !(await confirmDiscard())) return;
+    setSelectedId(id);
+  };
+
+  const saveRecipe = async () => {
+    if (!selectedId) return;
     try {
       await Promise.all([
         updateRecipe.mutateAsync({ productId: selectedId, items: editedRecipe }),
@@ -136,70 +179,11 @@ export default function BOMBuilder() {
           ...(isProduced ? { servings_per_batch: Math.max(1, editedServingsPerBatch) } : {}),
         }),
       ]);
+      setIsDirty(false);
       toast({ kind: 'success', title: 'บันทึกสูตรแล้ว', msg: `${selectedProduct?.name ?? ''} • ${editedRecipe.length} วัตถุดิบ • ต้นทุน${isProduced ? '/ชิ้น' : ''} ฿${costPerUnit.toFixed(2)} • Margin ${marginPct.toFixed(1)}%` });
-      return true;
     } catch (err) {
       toast({ kind: 'warning', title: 'บันทึกไม่สำเร็จ', msg: err instanceof Error ? err.message : 'กรุณาลองใหม่' });
-      return false;
     }
-  };
-
-  // ── Unsaved-changes detection ───────────────────────────────────────────────
-  // Compare the in-progress edits against the loaded recipe. Mirrors exactly
-  // what saveRecipe() persists (recipe rows, price, category, batch size).
-  const recipeDirty = (() => {
-    const orig = productDetail?.recipe ?? [];
-    if (orig.length !== editedRecipe.length) return true;
-    return editedRecipe.some((r, i) => r.invId !== orig[i].invId || Number(r.qty) !== Number(orig[i].qty));
-  })();
-  const priceDirty = !!productDetail && editedPrice !== productDetail.price;
-  const categoryDirty = !!selectedProduct && editedCategoryId !== (selectedProduct.cat ?? '');
-  const servingsDirty = isProduced && editedServingsPerBatch !== Math.max(1, selectedProduct?.servingsPerBatch ?? 1);
-  const isDirty = !!selectedProduct && !!productDetail && !detailLoading &&
-    (recipeDirty || priceDirty || categoryDirty || servingsDirty);
-  isDirtyRef.current = isDirty;
-
-  // Register a navigation guard so leaving the screen (sidebar) prompts to save.
-  useEffect(() => {
-    registerNavGuard((proceed) => {
-      if (isDirtyRef.current) {
-        setPendingNav(() => proceed);
-        return true; // intercepted — modal will run proceed() on confirm
-      }
-      return false;
-    });
-    return () => registerNavGuard(null);
-  }, [registerNavGuard]);
-
-  // Browser-level guard (refresh / close tab) while there are unsaved edits.
-  useEffect(() => {
-    if (!isDirty) return;
-    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [isDirty]);
-
-  const proceedNav = () => {
-    const go = pendingNav;
-    setPendingNav(null);
-    go?.();
-  };
-
-  const handleSaveAndLeave = async () => {
-    setSavingLeave(true);
-    const ok = await saveRecipe();
-    setSavingLeave(false);
-    if (ok) proceedNav();
-  };
-
-  // Switching to another menu in the list also discards edits — guard it too.
-  const requestSelect = (id: string) => {
-    if (id === selectedId) return;
-    if (isDirtyRef.current) {
-      setPendingNav(() => () => setSelectedId(id));
-      return;
-    }
-    setSelectedId(id);
   };
 
   const submitAddMenu = async ({ name, categoryId, price, description, type, apiProductType, servingsPerBatch }: { name: string; categoryId: string; price: number; description: string; type: ProductType; apiProductType: ApiProductType; servingsPerBatch: number }) => {
@@ -224,6 +208,71 @@ export default function BOMBuilder() {
       toast({ kind: 'success', title: 'ลบแล้ว', msg: `${deletedName} ถูกลบออกจากระบบ` });
     } catch (err) {
       toast({ kind: 'warning', title: 'ลบไม่สำเร็จ', msg: err instanceof Error ? err.message : 'กรุณาลองใหม่' });
+    }
+  };
+
+  // Build a copy name that collides with neither an existing product NOR an
+  // inventory item. PRODUCED products mirror their name into a finished-goods
+  // inventory item (unique per store), so a fixed "(สำเนา)" suffix clashes on the
+  // 2nd copy → backend 409 "Resource conflict". Bump a counter until it's free.
+  const makeUniqueCopyName = (baseName: string) => {
+    const taken = new Set<string>([
+      ...(products ?? []).map(p => p.name),
+      ...(inventoryItems ?? []).map(i => i.name),
+    ]);
+    const first = `${baseName} (สำเนา)`;
+    if (!taken.has(first)) return first;
+    let n = 2;
+    while (taken.has(`${baseName} (สำเนา ${n})`)) n++;
+    return `${baseName} (สำเนา ${n})`;
+  };
+
+  // Copy any product (by id, not just the selected one) into a new "(สำเนา)" entry,
+  // carrying over recipe (BOM), linked modifier groups, and cooking steps. Detail and
+  // steps are fetched on demand so the sidebar copy icon works on any row.
+  const duplicateProductById = async (target: MenuItem) => {
+    if (duplicating) return;
+    setDuplicating(true);
+    setDuplicatingId(target.id);
+    try {
+      const apiType = target.productType; // 'MADE_TO_ORDER' | 'PRODUCED'
+      const [detail, steps] = await Promise.all([
+        api.get<{ recipe: { inventory_item_id: string; quantity: string | number }[]; modifier_groups: { id: string }[] }>(`/api/v1/products/${target.id}`),
+        api.get<CookingStepRead[]>(`/api/v1/products/${target.id}/steps`).catch(() => [] as CookingStepRead[]),
+      ]);
+      const newProduct = await createProduct.mutateAsync({
+        name: makeUniqueCopyName(target.name),
+        category_id: target.cat || undefined,
+        price: target.price,
+        product_type: apiType,
+        servings_per_batch: apiType === 'PRODUCED' ? Math.max(1, target.servingsPerBatch) : undefined,
+      });
+      const recipeItems = (detail.recipe ?? []).map(r => ({ invId: r.inventory_item_id, qty: Number(r.quantity) }));
+      const groupIds = (detail.modifier_groups ?? []).map(g => g.id);
+      await Promise.all([
+        recipeItems.length > 0 ? updateRecipe.mutateAsync({ productId: newProduct.id, items: recipeItems }) : Promise.resolve(),
+        groupIds.length > 0 ? linkModifierGroups.mutateAsync({ productId: newProduct.id, groupIds }) : Promise.resolve(),
+        steps.length > 0 ? replaceSteps.mutateAsync({ productId: newProduct.id, steps: steps.map((s, i) => ({ instruction: s.instruction, sort_order: i })) }) : Promise.resolve(),
+      ]);
+      setSelectedId(newProduct.id);
+      toast({ kind: 'success', title: 'คัดลอกเมนูแล้ว', msg: newProduct.name });
+    } catch (err) {
+      toast({ kind: 'warning', title: 'คัดลอกไม่สำเร็จ', msg: err instanceof Error ? err.message : 'กรุณาลองใหม่' });
+    } finally {
+      setDuplicating(false);
+      setDuplicatingId(null);
+    }
+  };
+
+  const handleRename = async (newName: string) => {
+    if (!selectedId) return;
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === selectedProduct?.name) return;
+    try {
+      await updateProduct.mutateAsync({ productId: selectedId, name: trimmed });
+      toast({ kind: 'success', title: 'เปลี่ยนชื่อเมนูแล้ว', msg: trimmed });
+    } catch (err) {
+      toast({ kind: 'warning', title: 'เปลี่ยนชื่อไม่สำเร็จ', msg: err instanceof Error ? err.message : 'กรุณาลองใหม่' });
     }
   };
 
@@ -268,7 +317,7 @@ export default function BOMBuilder() {
                 onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = 'var(--color-surface-2)'; }}
                 onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
               >
-                <button onClick={() => requestSelect(m.id)} style={{
+                <button onClick={() => { void selectProduct(m.id); }} style={{
                   display: 'flex', gap: 12, alignItems: 'center', flex: 1, minWidth: 0, padding: 10,
                   background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
                 }}>
@@ -279,6 +328,22 @@ export default function BOMBuilder() {
                       <span className="num" style={{ fontSize: 11, color: 'var(--color-text-secondary)', fontWeight: 600 }}>{baht(m.price)}</span>
                     </div>
                   </div>
+                </button>
+                <button
+                  onClick={() => duplicateProductById(m)}
+                  disabled={duplicating}
+                  title="คัดลอกเมนู"
+                  aria-label={`คัดลอก ${m.name}`}
+                  style={{
+                    flexShrink: 0, background: 'transparent', border: 'none', cursor: duplicating ? 'not-allowed' : 'pointer',
+                    display: 'grid', placeItems: 'center', padding: 8, borderRadius: 6,
+                    color: 'var(--color-text-muted)', transition: 'all 150ms var(--ease-out)',
+                    opacity: duplicatingId === m.id ? 0.5 : 1,
+                  }}
+                  onMouseEnter={e => { if (!duplicating) { e.currentTarget.style.background = 'var(--color-accent-50)'; e.currentTarget.style.color = 'var(--color-accent)'; } }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--color-text-muted)'; }}
+                >
+                  <Icon name="copy" size={14} />
                 </button>
                 <button
                   onClick={() => setDeleteTarget(m)}
@@ -320,20 +385,23 @@ export default function BOMBuilder() {
             isProduced={isProduced}
             batchSize={batchSize}
             editedServingsPerBatch={editedServingsPerBatch}
-            onServingsPerBatchChange={setEditedServingsPerBatch}
+            onServingsPerBatchChange={changeServingsPerBatch}
             costPerUnit={costPerUnit}
             margin={margin}
             marginPct={marginPct}
             marginToneOf={marginToneOf}
             marginColorOf={marginColorOf}
-            onPriceChange={setEditedPrice}
-            onCategoryChange={setEditedCategoryId}
+            onPriceChange={changePrice}
+            onCategoryChange={changeCategory}
             onQtyChange={updateQty}
             onRemove={removeItem}
             onPickerOpen={() => setPicker(true)}
             onSave={saveRecipe}
             saving={updateRecipe.isPending || updateProduct.isPending}
             onDeleteRequest={() => setDeleteTarget(selectedProduct)}
+            onDuplicate={() => duplicateProductById(selectedProduct)}
+            onRename={handleRename}
+            duplicating={duplicating}
             linkedGroupIds={productDetail?.modifierGroupIds ?? []}
             allModifierGroups={modifierGroups ?? []}
             onModifierGroupPickerOpen={() => setModifierGroupPickerOpen(true)}
@@ -390,15 +458,6 @@ export default function BOMBuilder() {
           onClose={() => setDeleteTarget(null)}
         />
       )}
-      {pendingNav && (
-        <UnsavedChangesModal
-          name={selectedProduct?.name ?? ''}
-          saving={savingLeave}
-          onSave={handleSaveAndLeave}
-          onDiscard={proceedNav}
-          onCancel={() => setPendingNav(null)}
-        />
-      )}
       {modifierGroupPickerOpen && selectedId && (
         <ModifierGroupPicker
           currentGroupIds={productDetail?.modifierGroupIds ?? []}
@@ -414,6 +473,12 @@ export default function BOMBuilder() {
             }
           }}
           saving={linkModifierGroups.isPending}
+        />
+      )}
+      {discardPrompt && (
+        <DiscardConfirmModal
+          onDiscard={() => settleDiscard(true)}
+          onCancel={() => settleDiscard(false)}
         />
       )}
     </div>
@@ -446,6 +511,9 @@ interface RightPanelProps {
   onSave: () => void;
   saving: boolean;
   onDeleteRequest: () => void;
+  onDuplicate: () => void;
+  onRename: (name: string) => void;
+  duplicating: boolean;
   linkedGroupIds: string[];
   allModifierGroups: ModifierGroup[];
   onModifierGroupPickerOpen: () => void;
@@ -453,13 +521,95 @@ interface RightPanelProps {
   onDeleteModifier: (groupId: string, modifierId: string) => Promise<void>;
 }
 
-const RightPanel = ({ product, productType, recipe, editedPrice, editedCategoryId, categories, inventoryItems, totalCost, isProduced, batchSize, editedServingsPerBatch, onServingsPerBatchChange, costPerUnit, margin, marginPct, marginToneOf, marginColorOf, onPriceChange, onCategoryChange, onQtyChange, onRemove, onPickerOpen, onSave, saving, onDeleteRequest, linkedGroupIds, allModifierGroups, onModifierGroupPickerOpen, onAddModifier, onDeleteModifier }: RightPanelProps) => (
+// Menu title with an explicit "เปลี่ยนชื่อ" button. Clicking the button (or the
+// title) swaps in an input with clear save/cancel buttons. Enter saves, Esc cancels.
+const EditableMenuName = ({ name, onRename }: { name: string; onRename: (n: string) => void }) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+  useEffect(() => { setDraft(name); setEditing(false); }, [name]);
+
+  if (editing) {
+    const commit = () => {
+      const t = draft.trim();
+      if (t && t !== name) onRename(t);
+      setEditing(false);
+    };
+    const cancel = () => { setDraft(name); setEditing(false); };
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '2px 0 8px' }}>
+        <input
+          autoFocus
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { e.preventDefault(); commit(); }
+            else if (e.key === 'Escape') cancel();
+          }}
+          style={{ flex: 1, minWidth: 0, fontSize: 24, fontWeight: 700, letterSpacing: '-0.01em', fontFamily: 'inherit', border: '1px solid var(--color-accent)', borderRadius: 8, padding: '4px 10px', outline: 'none' }}
+        />
+        <button onClick={commit} title="บันทึกชื่อ" aria-label="บันทึกชื่อ"
+          style={{ flexShrink: 0, display: 'grid', placeItems: 'center', width: 38, height: 38, borderRadius: 8, border: 'none', background: 'var(--color-primary)', color: '#fff', cursor: 'pointer' }}>
+          <Icon name="check" size={18} />
+        </button>
+        <button onClick={cancel} title="ยกเลิก" aria-label="ยกเลิก"
+          style={{ flexShrink: 0, display: 'grid', placeItems: 'center', width: 38, height: 38, borderRadius: 8, border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
+          <Icon name="x" size={18} />
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '2px 0 8px', minWidth: 0 }}>
+      <h1
+        onClick={() => setEditing(true)}
+        title="คลิกเพื่อเปลี่ยนชื่อ"
+        style={{ margin: 0, fontSize: 24, fontWeight: 700, letterSpacing: '-0.01em', cursor: 'text', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}
+      >
+        {name}
+      </h1>
+      <button
+        onClick={() => setEditing(true)}
+        title="เปลี่ยนชื่อเมนู"
+        aria-label="เปลี่ยนชื่อเมนู"
+        style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface-2)', color: 'var(--color-text-secondary)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 600, transition: 'all 150ms var(--ease-out)' }}
+        onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-accent-50)'; e.currentTarget.style.color = 'var(--color-accent)'; e.currentTarget.style.borderColor = 'var(--color-accent)'; }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'var(--color-surface-2)'; e.currentTarget.style.color = 'var(--color-text-secondary)'; e.currentTarget.style.borderColor = 'var(--color-border)'; }}
+      >
+        <Icon name="pencil" size={14} /> เปลี่ยนชื่อ
+      </button>
+    </div>
+  );
+};
+
+// Spaced +/- step buttons placed beside a NumberInput. The native number spinner
+// is hidden (via the `no-spin` class on the input) because its arrows sit right
+// against the digits and are a tiny tap target; these sit apart and are easy to press.
+const StepButtons = ({ value, step, min, max, onChange }: { value: number; step: number; min?: number; max?: number; onChange: (n: number) => void }) => {
+  const clamp = (n: number) => Math.min(max ?? Infinity, Math.max(min ?? -Infinity, n));
+  const btn: React.CSSProperties = {
+    width: 34, height: 28, display: 'grid', placeItems: 'center',
+    background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', borderRadius: 8,
+    color: 'var(--color-text)', cursor: 'pointer', transition: 'all 120ms var(--ease-out)',
+  };
+  const hover = (e: React.MouseEvent<HTMLButtonElement>, on: boolean) => {
+    e.currentTarget.style.background = on ? 'var(--color-surface)' : 'var(--color-surface-2)';
+    e.currentTarget.style.borderColor = on ? 'var(--color-accent)' : 'var(--color-border)';
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <button type="button" aria-label="เพิ่ม" style={btn} onClick={() => onChange(clamp(value + step))} onMouseEnter={e => hover(e, true)} onMouseLeave={e => hover(e, false)}><Icon name="plus" size={15} /></button>
+      <button type="button" aria-label="ลด" style={btn} onClick={() => onChange(clamp(value - step))} onMouseEnter={e => hover(e, true)} onMouseLeave={e => hover(e, false)}><Icon name="minus" size={15} /></button>
+    </div>
+  );
+};
+
+const RightPanel = ({ product, productType, recipe, editedPrice, editedCategoryId, categories, inventoryItems, totalCost, isProduced, batchSize, editedServingsPerBatch, onServingsPerBatchChange, costPerUnit, margin, marginPct, marginToneOf, marginColorOf, onPriceChange, onCategoryChange, onQtyChange, onRemove, onPickerOpen, onSave, saving, onDeleteRequest, onDuplicate, onRename, duplicating, linkedGroupIds, allModifierGroups, onModifierGroupPickerOpen, onAddModifier, onDeleteModifier }: RightPanelProps) => (
   <>
     <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 12, padding: 24, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 20 }}>
       <div style={{ width: 80, height: 80, borderRadius: 12, background: product.color, color: '#fff', display: 'grid', placeItems: 'center', fontSize: 26, fontWeight: 800, flexShrink: 0 }}>{product.tag}</div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', fontWeight: 500 }}>{product.nameEn}</div>
-        <h1 style={{ margin: '2px 0 8px', fontSize: 24, fontWeight: 700, letterSpacing: '-0.01em' }}>{product.name}</h1>
+        <EditableMenuName name={product.name} onRename={onRename} />
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           <Tag tone={productType === 'MENU' ? 'info' : 'accent'}>{productType === 'MENU' ? 'เมนูขาย' : 'ส่วนผสม'}</Tag>
           {product.productType === 'PRODUCED' && <Tag tone="accent">ผลิตล่วงหน้า</Tag>}
@@ -474,33 +624,39 @@ const RightPanel = ({ product, productType, recipe, editedPrice, editedCategoryI
           <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: 6 }}>
             {productType === 'MENU' ? 'ราคาขาย' : 'ต้นทุนผลิต'}
           </div>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-            <span style={{ fontSize: 18, color: 'var(--color-text-secondary)' }}>฿</span>
-            <NumberInput min={0} step={5} value={editedPrice}
-              onChange={onPriceChange}
-              className="num"
-              style={{ width: 96, fontSize: 30, fontWeight: 700, textAlign: 'right', border: 'none', borderBottom: '2px solid var(--color-border)', outline: 'none', padding: '4px 0', background: 'transparent', fontFamily: 'inherit', letterSpacing: '-0.02em' }}
-              onFocus={e => e.target.style.borderBottomColor = 'var(--color-accent)'}
-              onBlur={e => e.target.style.borderBottomColor = 'var(--color-border)'}
-            />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+              <span style={{ fontSize: 18, color: 'var(--color-text-secondary)' }}>฿</span>
+              <NumberInput min={0} step={5} value={editedPrice}
+                onChange={onPriceChange}
+                className="num no-spin"
+                style={{ width: 78, fontSize: 30, fontWeight: 700, textAlign: 'right', border: 'none', borderBottom: '2px solid var(--color-border)', outline: 'none', padding: '4px 0', background: 'transparent', fontFamily: 'inherit', letterSpacing: '-0.02em' }}
+                onFocus={e => e.target.style.borderBottomColor = 'var(--color-accent)'}
+                onBlur={e => e.target.style.borderBottomColor = 'var(--color-border)'}
+              />
+            </div>
+            <StepButtons value={editedPrice} step={5} min={0} onChange={onPriceChange} />
           </div>
         </div>
         {isProduced && (
           <div>
             <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: 6 }}>จำนวน/แบทช์</div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-              <NumberInput
-                min={1}
-                step={1}
-                integer
-                value={editedServingsPerBatch}
-                onChange={onServingsPerBatchChange}
-                className="num"
-                style={{ width: 72, fontSize: 30, fontWeight: 700, textAlign: 'right', border: 'none', borderBottom: '2px solid var(--color-accent)', outline: 'none', padding: '4px 0', background: 'transparent', fontFamily: 'inherit', letterSpacing: '-0.02em', color: 'var(--color-primary-700)' }}
-                onFocus={e => e.target.style.borderBottomColor = 'var(--color-accent)'}
-                onBlur={e => e.target.style.borderBottomColor = 'var(--color-accent)'}
-              />
-              <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>ชิ้น</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                <NumberInput
+                  min={1}
+                  step={1}
+                  integer
+                  value={editedServingsPerBatch}
+                  onChange={onServingsPerBatchChange}
+                  className="num no-spin"
+                  style={{ width: 56, fontSize: 30, fontWeight: 700, textAlign: 'right', border: 'none', borderBottom: '2px solid var(--color-accent)', outline: 'none', padding: '4px 0', background: 'transparent', fontFamily: 'inherit', letterSpacing: '-0.02em', color: 'var(--color-primary-700)' }}
+                  onFocus={e => e.target.style.borderBottomColor = 'var(--color-accent)'}
+                  onBlur={e => e.target.style.borderBottomColor = 'var(--color-accent)'}
+                />
+                <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>ชิ้น</span>
+              </div>
+              <StepButtons value={editedServingsPerBatch} step={1} min={1} onChange={onServingsPerBatchChange} />
             </div>
           </div>
         )}
@@ -571,9 +727,14 @@ const RightPanel = ({ product, productType, recipe, editedPrice, editedCategoryI
     </div>
 
     <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'space-between', alignItems: 'center' }}>
-      <button onClick={onDeleteRequest} style={{ padding: '10px 16px', fontSize: 13, fontWeight: 600, background: 'transparent', color: 'var(--color-danger)', border: '1px solid var(--color-danger)', borderRadius: 8, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'inherit', transition: 'all 150ms var(--ease-out)' }} onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-danger-50)'; }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
-        <Icon name="trash" size={14} /> ลบเมนูนี้
-      </button>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button onClick={onDuplicate} disabled={duplicating} title="คัดลอกเมนูนี้ พร้อมสูตร ตัวเลือก และขั้นตอนทำ" style={{ padding: '10px 16px', fontSize: 13, fontWeight: 600, background: 'transparent', color: 'var(--color-text)', border: '1px solid var(--color-border)', borderRadius: 8, cursor: duplicating ? 'not-allowed' : 'pointer', opacity: duplicating ? 0.6 : 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, minWidth: 132, whiteSpace: 'nowrap', fontFamily: 'inherit', transition: 'background-color 150ms var(--ease-out)' }} onMouseEnter={e => { if (!duplicating) e.currentTarget.style.background = 'var(--color-surface-2)'; }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+          <Icon name="copy" size={14} /> {duplicating ? 'กำลังคัดลอก...' : 'คัดลอก'}
+        </button>
+        <button onClick={onDeleteRequest} style={{ padding: '10px 16px', fontSize: 13, fontWeight: 600, background: 'transparent', color: 'var(--color-danger)', border: '1px solid var(--color-danger)', borderRadius: 8, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'inherit', transition: 'all 150ms var(--ease-out)' }} onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-danger-50)'; }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+          <Icon name="trash" size={14} /> ลบเมนูนี้
+        </button>
+      </div>
       <button onClick={onSave} disabled={saving} style={{ padding: '10px 20px', fontSize: 14, fontWeight: 600, background: saving ? 'var(--color-surface-2)' : 'var(--color-primary)', color: saving ? 'var(--color-text-muted)' : '#fff', border: 'none', borderRadius: 8, cursor: saving ? 'not-allowed' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'inherit', transition: 'background 150ms var(--ease-out)' }} onMouseEnter={e => { if (!saving) e.currentTarget.style.background = 'var(--color-primary-700)'; }} onMouseLeave={e => { if (!saving) e.currentTarget.style.background = 'var(--color-primary)'; }}>
         <Icon name="check" size={16} />{saving ? 'กำลังบันทึก...' : 'บันทึกสูตร'}
       </button>
@@ -1050,6 +1211,22 @@ const BomModalShell = ({ title, subtitle, onClose, children }: { title: string; 
   </div>
 );
 
+const DiscardConfirmModal = ({ onDiscard, onCancel }: {
+  onDiscard: () => void; onCancel: () => void;
+}) => (
+  <BomModalShell title="ยังไม่ได้บันทึก" subtitle="มีการเปลี่ยนแปลงที่ยังไม่ได้บันทึก" onClose={onCancel}>
+    <div style={{ fontSize: 14, color: 'var(--color-text-secondary)', marginBottom: 20, lineHeight: 1.7 }}>
+      หากออกตอนนี้ การเปลี่ยนแปลงที่แก้ไว้จะหายไป ต้องการทิ้งการเปลี่ยนแปลงหรือไม่?
+    </div>
+    <BomModalActions>
+      <button onClick={onCancel} style={{ padding: '10px 16px', fontSize: 13, fontWeight: 600, background: 'transparent', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit' }}>อยู่ต่อ</button>
+      <button onClick={onDiscard} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 16px', fontSize: 13, fontWeight: 600, background: 'var(--color-danger)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit', transition: 'background 150ms var(--ease-out)' }}>
+        <Icon name="trash" size={14} />ทิ้งการเปลี่ยนแปลง
+      </button>
+    </BomModalActions>
+  </BomModalShell>
+);
+
 const DeleteConfirmModal = ({ name, deleting, onConfirm, onClose }: {
   name: string; deleting: boolean;
   onConfirm: () => void; onClose: () => void;
@@ -1062,26 +1239,6 @@ const DeleteConfirmModal = ({ name, deleting, onConfirm, onClose }: {
       <button onClick={onClose} style={{ padding: '10px 16px', fontSize: 13, fontWeight: 600, background: 'transparent', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit' }}>ยกเลิก</button>
       <button onClick={onConfirm} disabled={deleting} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 16px', fontSize: 13, fontWeight: 600, background: deleting ? 'var(--color-surface-2)' : 'var(--color-danger)', color: deleting ? 'var(--color-text-muted)' : '#fff', border: 'none', borderRadius: 8, cursor: deleting ? 'not-allowed' : 'pointer', fontFamily: 'inherit', transition: 'background 150ms var(--ease-out)' }}>
         <Icon name="trash" size={14} />{deleting ? 'กำลังลบ...' : 'ยืนยันลบ'}
-      </button>
-    </BomModalActions>
-  </BomModalShell>
-);
-
-const UnsavedChangesModal = ({ name, saving, onSave, onDiscard, onCancel }: {
-  name: string; saving: boolean;
-  onSave: () => void; onDiscard: () => void; onCancel: () => void;
-}) => (
-  <BomModalShell title="ยังไม่ได้บันทึกการเปลี่ยนแปลง" subtitle={name ? `สูตร "${name}"` : undefined} onClose={onCancel}>
-    <div style={{ fontSize: 14, color: 'var(--color-text-secondary)', marginBottom: 20, lineHeight: 1.7 }}>
-      คุณแก้ไขวัตถุดิบ/สูตรของรายการนี้ แต่ยังไม่ได้กดบันทึก หากออกจากหน้านี้ตอนนี้ การเปลี่ยนแปลงทั้งหมดจะหายไป — ต้องการบันทึกก่อนหรือไม่?
-    </div>
-    <BomModalActions>
-      <button onClick={onDiscard} disabled={saving} style={{ marginRight: 'auto', padding: '10px 16px', fontSize: 13, fontWeight: 600, background: 'transparent', color: 'var(--color-danger)', border: '1px solid var(--color-danger)', borderRadius: 8, cursor: saving ? 'not-allowed' : 'pointer', fontFamily: 'inherit', opacity: saving ? 0.5 : 1, transition: 'background 150ms var(--ease-out)' }} onMouseEnter={e => { if (!saving) e.currentTarget.style.background = 'var(--color-danger-50)'; }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
-        ออกโดยไม่บันทึก
-      </button>
-      <button onClick={onCancel} disabled={saving} style={{ padding: '10px 16px', fontSize: 13, fontWeight: 600, background: 'transparent', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)', borderRadius: 8, cursor: saving ? 'not-allowed' : 'pointer', fontFamily: 'inherit' }}>ยกเลิก</button>
-      <button onClick={onSave} disabled={saving} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 16px', fontSize: 13, fontWeight: 600, background: saving ? 'var(--color-surface-2)' : 'var(--color-primary)', color: saving ? 'var(--color-text-muted)' : '#fff', border: 'none', borderRadius: 8, cursor: saving ? 'not-allowed' : 'pointer', fontFamily: 'inherit', transition: 'background 150ms var(--ease-out)' }} onMouseEnter={e => { if (!saving) e.currentTarget.style.background = 'var(--color-primary-700)'; }} onMouseLeave={e => { if (!saving) e.currentTarget.style.background = 'var(--color-primary)'; }}>
-        <Icon name="check" size={14} />{saving ? 'กำลังบันทึก...' : 'บันทึกแล้วออก'}
       </button>
     </BomModalActions>
   </BomModalShell>

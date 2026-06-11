@@ -38,6 +38,10 @@ interface Props {
   data: ReceiptData;
   onClose: () => void;
   onPrint: () => Promise<void>;
+  /** Original order date/time for reprinted copies; defaults to now. */
+  issuedAt?: Date;
+  /** Render as a duplicate ("สำเนา") instead of the original. */
+  copy?: boolean;
 }
 
 export const DEFAULT_STORE: StoreInfo = {
@@ -48,10 +52,10 @@ export const DEFAULT_STORE: StoreInfo = {
   phone: '044-511-234',
 };
 
-export default function ReceiptModal({ data, onClose, onPrint }: Props) {
+export default function ReceiptModal({ data, onClose, onPrint, issuedAt, copy }: Props) {
   const [isPrinting, setIsPrinting] = useState(false);
 
-  const now = new Date();
+  const now = issuedAt ?? new Date();
   const buddhistYear = now.getFullYear() + 543;
   const invoiceNo = `IV${buddhistYear}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(data.orderNumber).padStart(4, '0')}`;
   const formatDate = (d: Date) => d.toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' });
@@ -102,6 +106,7 @@ export default function ReceiptModal({ data, onClose, onPrint }: Props) {
             borderRadius: 20,
             boxShadow: '0 32px 80px rgba(61,40,23,0.28), 0 8px 24px rgba(61,40,23,0.14)',
             display: 'flex', flexDirection: 'column',
+            animation: 'modal-in var(--dur-slow) var(--ease-out)',
           }}
         >
           {/* ── Toolbar ── */}
@@ -123,7 +128,7 @@ export default function ReceiptModal({ data, onClose, onPrint }: Props) {
                 ออเดอร์ #{data.orderNumber} · {formatDate(now)} {formatTime(now)}
               </div>
             </div>
-            <button onClick={onClose} style={{
+            <button onClick={onClose} aria-label="ปิด" className="icon-btn hit-44" style={{
               width: 30, height: 30, borderRadius: 6, display: 'grid', placeItems: 'center',
               color: 'var(--color-text-secondary)',
             }}>
@@ -135,7 +140,7 @@ export default function ReceiptModal({ data, onClose, onPrint }: Props) {
           <div style={{ padding: '20px', overflowY: 'auto', maxHeight: '68vh', background: '#EFE9E0' }}>
             <ReceiptPaper
               data={data}
-              invoiceNo={invoiceNo} now={now}
+              invoiceNo={invoiceNo} now={now} copy={copy}
               fmt={fmt} formatDate={formatDate} formatTime={formatTime}
               storeInfo={DEFAULT_STORE}
             />
@@ -146,8 +151,8 @@ export default function ReceiptModal({ data, onClose, onPrint }: Props) {
             padding: '12px 20px', borderTop: '1px solid var(--color-border)',
             display: 'flex', gap: 8, alignItems: 'center',
           }}>
-            <button onClick={handleBrowserPrint} style={{
-              padding: '8px 14px', borderRadius: 8, fontSize: 13,
+            <button onClick={handleBrowserPrint} className="icon-btn pressable" style={{
+              padding: '8px 14px', borderRadius: 8, fontSize: 13, minHeight: 44,
               border: '1px solid var(--color-border)',
               display: 'flex', alignItems: 'center', gap: 6,
               color: 'var(--color-text-secondary)',
@@ -155,17 +160,18 @@ export default function ReceiptModal({ data, onClose, onPrint }: Props) {
               <Icon name="print" size={14} /> บันทึก PDF
             </button>
             <div style={{ flex: 1 }} />
-            <button onClick={onClose} style={{
-              padding: '8px 16px', borderRadius: 8, fontSize: 13,
+            <button onClick={onClose} className="icon-btn" style={{
+              padding: '8px 16px', borderRadius: 8, fontSize: 13, minHeight: 44,
               color: 'var(--color-text-secondary)',
             }}>ปิด</button>
-            <button onClick={handlePrint} disabled={isPrinting} style={{
-              padding: '9px 22px', borderRadius: 8, fontSize: 14, fontWeight: 700,
+            <button onClick={handlePrint} disabled={isPrinting} aria-busy={isPrinting || undefined} className="pressable" style={{
+              padding: '9px 22px', borderRadius: 8, fontSize: 14, fontWeight: 700, minHeight: 44,
               background: isPrinting ? 'var(--color-border)' : 'var(--color-primary)',
               color: 'white', display: 'flex', alignItems: 'center', gap: 8,
               opacity: isPrinting ? 0.7 : 1,
+              cursor: isPrinting ? 'wait' : 'pointer',
             }}>
-              <Icon name="printer" size={16} />
+              {isPrinting ? <span className="spinner" aria-hidden /> : <Icon name="printer" size={16} />}
               {isPrinting ? 'กำลังพิมพ์...' : 'พิมพ์ใบเสร็จ'}
             </button>
           </div>
@@ -206,8 +212,8 @@ function TRow({ l, r, bold, muted, indent }: {
   );
 }
 
-export function ReceiptPaper({ data, invoiceNo, now, fmt, storeInfo }: {
-  data: ReceiptData; invoiceNo: string; now: Date;
+export function ReceiptPaper({ data, invoiceNo, now, copy, fmt, storeInfo }: {
+  data: ReceiptData; invoiceNo: string; now: Date; copy?: boolean;
   fmt: (n: number) => string;
   formatDate?: (d: Date) => string; formatTime?: (d: Date) => string;
   storeInfo?: StoreInfo;
@@ -235,7 +241,7 @@ export function ReceiptPaper({ data, invoiceNo, now, fmt, storeInfo }: {
         />
         <div style={{ fontSize: 17, fontWeight: 800, letterSpacing: '0.01em' }}>{S.name}</div>
         <div style={{ marginTop: 3 }}>ใบเสร็จรับเงิน</div>
-        <div style={{ color: '#7A6E60' }}>ต้นฉบับ</div>
+        <div style={{ color: copy ? 'var(--color-danger)' : '#7A6E60', fontWeight: copy ? 700 : 400 }}>{copy ? 'สำเนา' : 'ต้นฉบับ'}</div>
       </div>
 
       <Dash />
