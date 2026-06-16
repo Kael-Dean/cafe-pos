@@ -41,6 +41,9 @@ interface OrderItemRead {
 interface OrderRead {
   id: string;
   order_number: number;
+  daily_number?: number;
+  business_date?: string;
+  receipt_no?: string;
   status: string;
   channel: string;
   total: string | number;
@@ -72,6 +75,12 @@ const STATUS_MAP: Record<string, KDSTicket['status']> = {
   READY: 'ready',
 };
 
+/** The order number we show to users: the per-day running number when the
+ *  backend provides it, else the global order_number (pre-backend fallback). */
+export function displayOrderNo(o: { order_number: number; daily_number?: number | null }): number {
+  return o.daily_number ?? o.order_number;
+}
+
 export function parseModifiers(raw: unknown): string[] {
   if (!raw || typeof raw !== 'object') return [];
   const obj = raw as Record<string, unknown>;
@@ -85,9 +94,9 @@ export function parseModifiers(raw: unknown): string[] {
 }
 
 function mapToTicket(o: OrderRead): KDSTicket {
-  const num = typeof o.order_number === 'number' ? o.order_number : parseInt(String(o.order_number).replace(/\D/g, '') || '0', 10);
+  const num = displayOrderNo(o);
   return {
-    id: String(o.order_number),
+    id: String(num),
     orderId: o.id,
     queue: num,
     type: CHANNEL_LABEL[o.channel] ?? 'Dine-in',
@@ -132,6 +141,33 @@ export function usePayOrder() {
       api.patch<OrderRead>(`/api/v1/orders/${orderId}/pay`, { payment_method, payment_ref }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['kds-orders'] });
+    },
+  });
+}
+
+export function useVoidOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ orderId, reason, restock }:
+      { orderId: string; reason: string; restock: boolean }) =>
+      api.post<OrderRead>(`/api/v1/orders/${orderId}/void`, { reason, restock }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['kds-orders'] });
+      qc.invalidateQueries({ queryKey: ['receipt-copies'] });
+    },
+  });
+}
+
+/** Backdate an order on the server (business_date + daily_number + receipt_no +
+ *  created_at, plus the order's stock movements) so it counts as a past sale. */
+export function useSetOrderDate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ orderId, businessDate }: { orderId: string; businessDate: string }) =>
+      api.patch<OrderRead>(`/api/v1/orders/${orderId}/date`, { business_date: businessDate }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['kds-orders'] });
+      qc.invalidateQueries({ queryKey: ['receipt-copies'] });
     },
   });
 }

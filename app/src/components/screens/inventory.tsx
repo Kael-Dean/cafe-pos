@@ -3,6 +3,8 @@
 import { useState, useMemo } from 'react';
 import Icon from '../icons';
 import { useToast, Tag, baht, Select } from '../app-common';
+import { useStagger } from '@/lib/motion';
+import { Skeleton, SkeletonTable } from '@/components/ui/skeleton';
 import {
   useInventory, useInventoryMovements, useWasteStock,
   useCreateInventoryItem, useDeleteInventoryItem, useSupplierHistory,
@@ -19,6 +21,14 @@ const WASTAGE_REASONS = [
   { id: 'DAMAGED', label: 'เสีย' },
   { id: 'OTHER',   label: 'อื่นๆ' },
 ] as const;
+
+// Display-only labels for reason_codes shown in movement history. Superset of the
+// selectable list above: CANCELED is set by the backend on order-cancel write-offs
+// and must render properly, but is not offered in the manual wastage form.
+const WASTAGE_REASON_LABELS: Record<string, string> = {
+  ...Object.fromEntries(WASTAGE_REASONS.map(r => [r.id, r.label])),
+  CANCELED: 'ยกเลิกออเดอร์',
+};
 
 const stockStatusOf = (it: InventoryItem) => {
   if (it.stock < it.parLevel * 0.5) return { tone: 'danger' as const,  label: 'Critical' };
@@ -38,7 +48,7 @@ const expiryBadge = (dateStr?: string | null) => {
   if (days === null) return null;
   if (days < 0)   return { label: 'หมดอายุแล้ว',        color: 'var(--color-danger)',  bg: 'var(--color-danger-50)' };
   if (days <= 3)  return { label: `หมดใน ${days} วัน`,  color: 'var(--color-danger)',  bg: 'var(--color-danger-50)' };
-  if (days <= 7)  return { label: `หมดใน ${days} วัน`,  color: '#9C6A1F',              bg: 'var(--color-warning-50)' };
+  if (days <= 7)  return { label: `หมดใน ${days} วัน`,  color: 'var(--color-warning)', bg: 'var(--color-warning-50)' };
   if (days <= 30) return { label: `หมดใน ${days} วัน`,  color: 'var(--color-text-secondary)', bg: 'var(--color-surface-2)' };
   return null;
 };
@@ -68,6 +78,7 @@ export default function Inventory() {
   const [receiptOpen, setReceiptOpen] = useState(false);
   const [draftReceiptId, setDraftReceiptId] = useState<string | null>(null);
   const [wastageOpen, setWastageOpen] = useState(false);
+  const [wastagePresetId, setWastagePresetId] = useState<string | null>(null);
   const [addIngredientOpen, setAddIngredientOpen] = useState(false);
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<InventoryItem | null>(null);
   const [supplierHistoryItem, setSupplierHistoryItem] = useState<InventoryItem | null>(null);
@@ -165,7 +176,7 @@ export default function Inventory() {
 
   const openNewReceipt = () => { setDraftReceiptId(null); setReceiptOpen(true); };
   const openDraftReceipt = (id: string) => { setDraftReceiptId(id); setReceiptOpen(true); };
-  const openWastage = (itemId?: string) => { setWastageOpen(true); };
+  const openWastage = (itemId?: string) => { setWastagePresetId(itemId ?? null); setWastageOpen(true); };
 
   const TABS = [
     { id: 'items',   label: 'วัตถุดิบ' },
@@ -183,7 +194,20 @@ export default function Inventory() {
       </div>
 
       {invLoading ? (
-        <div style={{ padding: 60, textAlign: 'center', color: 'var(--color-text-muted)' }}>กำลังโหลดข้อมูลคลัง...</div>
+        <div aria-busy="true">
+          <span className="sr-only">กำลังโหลดข้อมูลคลัง</span>
+          <div className="grid grid-cols-2 md:grid-cols-4" style={{ gap: 12, marginBottom: 16 }}>
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 12, padding: 16 }}>
+                <Skeleton width="70%" height="var(--space-3)" />
+                <Skeleton width="45%" height="var(--space-6)" style={{ marginTop: 'var(--space-2)' }} />
+              </div>
+            ))}
+          </div>
+          <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 12, padding: 'var(--space-4)' }}>
+            <SkeletonTable rows={8} cols={5} />
+          </div>
+        </div>
       ) : (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4" style={{ gap: 12, marginBottom: 16 }}>
@@ -200,7 +224,7 @@ export default function Inventory() {
                   padding: '8px 16px', fontSize: 13, fontWeight: 600, border: 'none', borderRadius: 8, cursor: 'pointer',
                   background: tab === t.id ? 'var(--color-surface)' : 'transparent',
                   color: tab === t.id ? 'var(--color-text)' : 'var(--color-text-secondary)',
-                  boxShadow: tab === t.id ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                  boxShadow: tab === t.id ? 'var(--shadow-xs)' : 'none',
                   fontFamily: 'inherit', transition: 'all 150ms var(--ease-out)',
                   whiteSpace: 'nowrap',
                 }}>{t.label}</button>
@@ -227,7 +251,7 @@ export default function Inventory() {
           }}
         />
       )}
-      {wastageOpen && <WastageModal items={inventoryItems ?? []} presetItemId={null} onClose={() => setWastageOpen(false)} onSubmit={submitWastage} />}
+      {wastageOpen && <WastageModal items={inventoryItems ?? []} presetItemId={wastagePresetId} onClose={() => setWastageOpen(false)} onSubmit={submitWastage} />}
       {addIngredientOpen && <AddIngredientModal onClose={() => setAddIngredientOpen(false)} onSubmit={submitAddIngredient} isPending={createItem.isPending} />}
       {deleteConfirmItem && (
         <DeleteInventoryConfirmModal
@@ -255,7 +279,7 @@ export default function Inventory() {
 
 const KPISmall = ({ label, value, highlight }: { label: string; value: string; highlight?: 'warning' | 'danger' }) => {
   const tones = {
-    warning: { bg: 'var(--color-warning-50)', border: 'var(--color-warning)', fg: '#9C6A1F' },
+    warning: { bg: 'var(--color-warning-50)', border: 'var(--color-warning)', fg: 'var(--color-warning)' },
     danger:  { bg: 'var(--color-danger-50)',  border: 'var(--color-danger)',  fg: 'var(--color-danger)' },
   };
   const t = highlight ? tones[highlight] : null;
@@ -273,14 +297,14 @@ const miniBtnStyle = (variant: 'primary' | 'ghost' | 'danger'): React.CSSPropert
   border: variant === 'danger' ? '1px solid var(--color-danger)' : variant === 'ghost' ? '1px solid var(--color-border)' : 'none',
   borderRadius: 6, cursor: 'pointer',
   background: variant === 'primary' ? 'var(--color-primary)' : 'transparent',
-  color: variant === 'danger' ? 'var(--color-danger)' : variant === 'ghost' ? 'var(--color-text-secondary)' : '#fff',
+  color: variant === 'danger' ? 'var(--color-danger)' : variant === 'ghost' ? 'var(--color-text-secondary)' : 'var(--color-text-inverse)',
   fontFamily: 'inherit', transition: 'all 150ms var(--ease-out)',
 });
 
 const primaryBtnStyle = (): React.CSSProperties => ({
   display: 'inline-flex', alignItems: 'center', gap: 6,
   padding: '10px 16px', fontSize: 13, fontWeight: 600,
-  background: 'var(--color-primary)', color: '#fff',
+  background: 'var(--color-primary)', color: 'var(--color-text-inverse)',
   border: 'none', borderRadius: 8, cursor: 'pointer',
   fontFamily: 'inherit', transition: 'background 150ms var(--ease-out)',
 });
@@ -317,16 +341,16 @@ const ModalActions = ({ children }: { children: React.ReactNode }) => (
 );
 
 const ModalShell = ({ title, subtitle, onClose, children, maxWidth = 520 }: { title: string; subtitle?: string; onClose: () => void; children: React.ReactNode; maxWidth?: number }) => (
-  <div style={{ position: 'fixed', inset: 0, background: 'rgba(26, 16, 8, 0.55)', display: 'grid', placeItems: 'center', zIndex: 100, padding: 20, animation: 'backdrop-in 200ms var(--ease-out)' }} onClick={onClose}>
-    <div onClick={e => e.stopPropagation()} style={{ background: 'var(--color-surface)', borderRadius: 16, width: '100%', maxWidth, maxHeight: '90vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 50px rgba(0,0,0,0.25)', animation: 'modal-in 220ms var(--ease-out)' }}>
-      <div style={{ padding: 20, borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+  <div className="modal-backdrop" style={{ alignItems: 'center', padding: 'var(--space-5)' }} onClick={onClose}>
+    <div className="modal-card" role="dialog" aria-modal="true" aria-label={title} onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: 'var(--space-5)', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>{title}</div>
           {subtitle && <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', marginTop: 2 }}>{subtitle}</div>}
         </div>
-        <button onClick={onClose} style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 6, borderRadius: 8, display: 'grid', placeItems: 'center' }}><Icon name="x" size={18} /></button>
+        <button onClick={onClose} aria-label="ปิด" className="icon-btn hit-44" style={{ background: 'transparent', border: 'none', cursor: 'pointer', width: 36, height: 36, borderRadius: 8, display: 'grid', placeItems: 'center', color: 'var(--color-text-secondary)' }}><Icon name="x" size={18} /></button>
       </div>
-      <div className="scroll" style={{ overflow: 'auto', padding: 20, flex: 1 }}>{children}</div>
+      <div className="scroll" style={{ overflow: 'auto', padding: 'var(--space-5)', flex: 1 }}>{children}</div>
     </div>
   </div>
 );
@@ -350,7 +374,12 @@ const ItemsTab = ({ items, totalCount, search, setSearch, statusFilter, setStatu
   onAddIngredient: () => void; onDelete: (item: InventoryItem) => void;
   onSupplierHistory: (item: InventoryItem) => void;
   onLots: (item: InventoryItem) => void;
-}) => (
+}) => {
+  // Rows fade+rise in once, re-keyed on the filtered result so a search/filter
+  // change replays the entrance. Skips the sticky header (first child).
+  // Subtle, one-shot, honors reduced-motion.
+  const rowsRef = useStagger({ selector: ':scope > div:not(:first-child)', each: 0.025 });
+  return (
   <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 12, overflow: 'hidden' }}>
     {/* Filter bar — stacks on mobile, row on desktop */}
     <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--color-border)' }}>
@@ -406,7 +435,7 @@ const ItemsTab = ({ items, totalCount, search, setSearch, statusFilter, setStatu
     </div>
 
     {/* Desktop table — hidden on mobile */}
-    <div className="hidden md:block">
+    <div key={`d-${items.length}-${search}-${statusFilter}`} ref={rowsRef} className="hidden md:block">
       <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 60px 100px 100px 80px 100px 240px', gap: 12, padding: '10px 20px', fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em', background: 'var(--color-surface-2)', borderBottom: '1px solid var(--color-border)' }}>
         <div>วัตถุดิบ</div>
         <div className="hidden lg:block">หน่วย</div>
@@ -438,7 +467,7 @@ const ItemsTab = ({ items, totalCount, search, setSearch, statusFilter, setStatu
             </div>
             <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
               <button onClick={() => onLots(it)} style={miniBtnStyle('primary')} onMouseEnter={e => e.currentTarget.style.background = 'var(--color-primary-700)'} onMouseLeave={e => e.currentTarget.style.background = 'var(--color-primary)'}><Icon name="list" size={12} /> Lots</button>
-              <button onClick={() => onWaste(it.id)} style={miniBtnStyle('ghost')} onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-warning-50)'; e.currentTarget.style.color = '#9C6A1F'; }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; }}><Icon name="trash" size={12} /> Waste</button>
+              <button onClick={() => onWaste(it.id)} style={miniBtnStyle('ghost')} onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-warning-50)'; e.currentTarget.style.color = 'var(--color-warning)'; }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; }}><Icon name="trash" size={12} /> Waste</button>
               <button onClick={() => onSupplierHistory(it)} style={miniBtnStyle('ghost')} title="ประวัติ Supplier" onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-accent-50)'; e.currentTarget.style.color = 'var(--color-primary)'; }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; }}>ประวัติ</button>
               <button onClick={() => onDelete(it)} style={miniBtnStyle('danger')} onMouseEnter={e => e.currentTarget.style.background = 'var(--color-danger-50)'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'} title="ลบวัตถุดิบ"><Icon name="trash" size={12} /></button>
             </div>
@@ -491,7 +520,7 @@ const ItemsTab = ({ items, totalCount, search, setSearch, statusFilter, setStatu
                 {/* Row 3: action buttons */}
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   <button onClick={() => onLots(it)} style={miniBtnStyle('primary')} onMouseEnter={e => e.currentTarget.style.background = 'var(--color-primary-700)'} onMouseLeave={e => e.currentTarget.style.background = 'var(--color-primary)'}><Icon name="list" size={12} /> Lots</button>
-                  <button onClick={() => onWaste(it.id)} style={miniBtnStyle('ghost')} onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-warning-50)'; e.currentTarget.style.color = '#9C6A1F'; }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; }}><Icon name="trash" size={12} /> Waste</button>
+                  <button onClick={() => onWaste(it.id)} style={miniBtnStyle('ghost')} onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-warning-50)'; e.currentTarget.style.color = 'var(--color-warning)'; }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; }}><Icon name="trash" size={12} /> Waste</button>
                   <button onClick={() => onSupplierHistory(it)} style={miniBtnStyle('ghost')} title="ประวัติ Supplier" onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-accent-50)'; e.currentTarget.style.color = 'var(--color-primary)'; }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--color-text-secondary)'; }}>ประวัติ</button>
                   <button onClick={() => onDelete(it)} style={miniBtnStyle('danger')} onMouseEnter={e => e.currentTarget.style.background = 'var(--color-danger-50)'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'} title="ลบวัตถุดิบ"><Icon name="trash" size={12} /></button>
                 </div>
@@ -502,7 +531,8 @@ const ItemsTab = ({ items, totalCount, search, setSearch, statusFilter, setStatu
       )}
     </div>
   </div>
-);
+  );
+};
 
 // ── Usage Tab ─────────────────────────────────────────────────────────────────
 const UsageTab = ({ stats, movements }: {
@@ -606,7 +636,9 @@ const ReceiveTab = ({ onNewReceipt, onContinueDraft, onViewReceipt, onAddIngredi
           <div>วันที่รับ</div><div>Ref</div><div>Supplier</div><div>สถานะ</div><div style={{ textAlign: 'right' }}>รายการ</div><div></div>
         </div>
         {isLoading ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>กำลังโหลด...</div>
+          <div style={{ padding: 'var(--space-4) var(--space-5)' }}>
+            <SkeletonTable rows={5} cols={6} header={false} label="กำลังโหลดใบรับสินค้า" />
+          </div>
         ) : !receipts || receipts.length === 0 ? (
           <div style={{ padding: 48, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>ยังไม่มีใบรับสินค้า — กด "รับเข้าสต็อกใหม่" เพื่อเริ่ม</div>
         ) : receipts.map((r: ReceiptListItem, idx: number) => (
@@ -635,12 +667,12 @@ const WastageTab = ({ items, movements, totalCost, onAdd }: { items: InventoryIt
   <>
     <div style={{ background: 'var(--color-warning-50)', border: '1px solid var(--color-warning)', borderRadius: 12, padding: 20, marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
       <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-        <div style={{ width: 48, height: 48, borderRadius: 12, background: 'rgba(232,169,81,0.18)', color: '#9C6A1F', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+        <div style={{ width: 48, height: 48, borderRadius: 12, background: 'var(--color-surface)', color: 'var(--color-warning)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
           <Icon name="warning" size={24} />
         </div>
         <div>
-          <div style={{ fontSize: 12, fontWeight: 600, color: '#9C6A1F', textTransform: 'uppercase', letterSpacing: '0.04em' }}>มูลค่าสูญเสียเดือนนี้</div>
-          <div className="num" style={{ fontSize: 28, fontWeight: 800, color: '#9C6A1F', letterSpacing: '-0.02em', marginTop: 2 }}>{baht(totalCost)}</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-warning)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>มูลค่าสูญเสียเดือนนี้</div>
+          <div className="num" style={{ fontSize: 28, fontWeight: 800, color: 'var(--color-text)', letterSpacing: '-0.02em', marginTop: 2 }}>{baht(totalCost)}</div>
         </div>
       </div>
       <button onClick={onAdd} style={primaryBtnStyle()} onMouseEnter={e => e.currentTarget.style.background = 'var(--color-primary-700)'} onMouseLeave={e => e.currentTarget.style.background = 'var(--color-primary)'}><Icon name="plus" size={14} /> บันทึก Wastage</button>
@@ -654,13 +686,13 @@ const WastageTab = ({ items, movements, totalCost, onAdd }: { items: InventoryIt
       ) : movements.map((m, idx) => {
         const inv = items.find(i => i.id === m.invId);
         const lossValue = inv ? inv.costPerUnit * m.qty : 0;
-        const reason = WASTAGE_REASONS.find(r => r.id === m.reason);
+        const reasonLabel = m.reason ? (WASTAGE_REASON_LABELS[m.reason] ?? m.reason) : null;
         return (
           <div key={m.id} style={{ display: 'grid', gridTemplateColumns: '140px 1.5fr 110px 130px 110px 1fr', gap: 12, padding: '12px 20px', alignItems: 'center', borderBottom: idx === movements.length - 1 ? 'none' : '1px solid var(--color-border)' }}>
             <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>{formatRelative(m.at)}</div>
             <div style={{ fontSize: 14, fontWeight: 500 }}>{inv?.name || m.invId}</div>
             <div className="num" style={{ fontSize: 13, fontWeight: 600, textAlign: 'right', color: 'var(--color-danger)' }}>-{m.qty.toLocaleString()} {inv?.unit}</div>
-            <div><Tag tone={m.reason === 'EXPIRED' ? 'danger' : m.reason === 'TRIAL' ? 'info' : 'warning'}>{reason?.label || m.reason}</Tag></div>
+            <div><Tag tone={m.reason === 'EXPIRED' ? 'danger' : m.reason === 'TRIAL' || m.reason === 'CANCELED' ? 'info' : 'warning'}>{reasonLabel}</Tag></div>
             <div className="num" style={{ fontSize: 13, fontWeight: 600, textAlign: 'right' }}>{baht(lossValue)}</div>
             <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}><div>{m.user}</div>{m.note && <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>{m.note}</div>}</div>
           </div>
@@ -820,7 +852,7 @@ const ReceiptFlowModal = ({ items, initialReceiptId, onClose, onConfirmed, onAdd
                   style={smallInputStyle()}
                 />
                 {ingredientOpen && (
-                  <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.12)', zIndex: 50, maxHeight: 200, overflow: 'auto', marginTop: 4 }}>
+                  <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 8, boxShadow: 'var(--shadow-md)', zIndex: 50, maxHeight: 200, overflow: 'auto', marginTop: 4 }}>
                     {items.filter(it => !ingredientSearch || it.name.toLowerCase().includes(ingredientSearch.toLowerCase())).length === 0 ? (
                       <div style={{ padding: '10px 12px', fontSize: 13, color: 'var(--color-text-muted)' }}>ไม่พบวัตถุดิบ</div>
                     ) : items.filter(it => !ingredientSearch || it.name.toLowerCase().includes(ingredientSearch.toLowerCase())).map(it => (
@@ -869,7 +901,9 @@ const ReceiptFlowModal = ({ items, initialReceiptId, onClose, onConfirmed, onAdd
 
           {/* Lot lines list */}
           {receiptLoading ? (
-            <div style={{ padding: 32, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>กำลังโหลด...</div>
+            <div style={{ padding: 'var(--space-3) 0' }}>
+              <SkeletonTable rows={4} cols={6} header={false} label="กำลังโหลดรายการ" />
+            </div>
           ) : (
             <div style={{ border: '1px solid var(--color-border)', borderRadius: 10, overflow: 'hidden', marginBottom: 16 }}>
               <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 70px 80px 90px 100px 36px', gap: 10, padding: '8px 14px', fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em', background: 'var(--color-surface-2)', borderBottom: '1px solid var(--color-border)' }}>
@@ -953,7 +987,9 @@ const LotsModal = ({ item, onClose }: { item: InventoryItem; onClose: () => void
           <div>#</div><div>วันที่รับ</div><div style={{ textAlign: 'right' }}>คงเหลือ</div><div style={{ textAlign: 'right' }}>แพ็ค</div><div style={{ textAlign: 'right' }}>ราคา/แพ็ค</div><div style={{ textAlign: 'right' }}>ต้นทุน/หน่วย</div><div>หมดอายุ</div>
         </div>
         {isLoading ? (
-          <div style={{ padding: 32, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>กำลังโหลด...</div>
+          <div style={{ padding: 'var(--space-3) var(--space-4)' }}>
+            <SkeletonTable rows={4} cols={7} header={false} label="กำลังโหลดล็อตสต็อก" />
+          </div>
         ) : !lots || lots.length === 0 ? (
           <div style={{ padding: 32, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>ไม่มีล็อตสต็อก</div>
         ) : lots.map((lot: StockLot, idx: number) => {
@@ -1049,7 +1085,7 @@ const SupplierHistoryModal = ({ item, onClose }: { item: InventoryItem; onClose:
   return (
     <ModalShell title={`ประวัติ Supplier — ${item.name}`} subtitle="รายการรับเข้าทั้งหมด (RECEIVE movements)" onClose={onClose}>
       {isLoading ? (
-        <div style={{ padding: 32, textAlign: 'center', color: 'var(--color-text-muted)' }}>กำลังโหลด...</div>
+        <SkeletonTable rows={5} cols={4} label="กำลังโหลดประวัติ Supplier" />
       ) : !data || data.length === 0 ? (
         <div style={{ padding: 32, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>ยังไม่มีประวัติการรับเข้า</div>
       ) : (
@@ -1127,7 +1163,7 @@ const ReceiptDetailModal = ({ id, onClose }: { id: string; onClose: () => void }
       maxWidth={680}
     >
       {isLoading ? (
-        <div style={{ padding: 48, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>กำลังโหลด...</div>
+        <SkeletonTable rows={5} cols={5} label="กำลังโหลดใบรับสินค้า" />
       ) : (
         <>
           <div style={{ border: '1px solid var(--color-border)', borderRadius: 10, overflow: 'hidden', marginBottom: 16 }}>

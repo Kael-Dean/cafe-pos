@@ -1,4 +1,5 @@
 import type { SalesReportData, ReportRow } from '@/hooks/use-sales-report';
+import type { Workbook } from 'exceljs';
 
 const MONEY_FMT = '#,##0.00';
 const HEADER_ARGB = 'FFEFE7DD'; // soft latte tone for header rows
@@ -12,6 +13,82 @@ function thaiDate(ymd: string): string {
 }
 function thaiDateTime(d: Date): string {
   return d.toLocaleString('th-TH-u-ca-buddhist', { dateStyle: 'long', timeStyle: 'short' });
+}
+
+// ── Register sheet (ยอดขาย.xltx layout) ────────────────────────────────────────
+// Flat per-line register: title row + header + one row per product line, with
+// bill-level columns (discount/net/payment/note) on the first line of each bill
+// only — matching the on-screen RegisterTable.
+const REGISTER_HEADERS = [
+  'ลำดับ', 'เลขที่บิล', 'เลขที่ใบเสร็จ', 'วันที่', 'เวลา', 'ช่องทาง', 'รายการ',
+  'จำนวน', 'ราคา/หน่วย', 'จำนวนเงิน', 'ส่วนลด', 'สุทธิ', 'ชำระเงิน', 'หมายเหตุ',
+] as const;
+const REGISTER_WIDTHS = [6, 12, 17, 12, 8, 12, 34, 9, 12, 14, 12, 14, 16, 22];
+const REGISTER_COLS = REGISTER_HEADERS.length;
+const ZEBRA_ARGB = 'FFF6F1EA'; // very light latte — alternating bill bands
+
+function addRegisterSheet(wb: Workbook, data: SalesReportData): void {
+  const ws = wb.addWorksheet('การขาย');
+  ws.columns = REGISTER_WIDTHS.map((w) => ({ width: w }));
+
+  const titleText =
+    data.mode === 'daily'
+      ? `ข้อมูลการขาย — ${thaiDate(data.from)}`
+      : `ข้อมูลการขาย — ${thaiDate(data.from)} ถึง ${thaiDate(data.to)}`;
+  ws.addRow([titleText]);
+  ws.mergeCells(1, 1, 1, REGISTER_COLS);
+  ws.getRow(1).font = { bold: true, size: 14 };
+  ws.getRow(1).alignment = { horizontal: 'center', vertical: 'middle' };
+
+  // Header — style every column explicitly (incl. ชำระเงิน / หมายเหตุ) so the
+  // fill never stops short of the last column.
+  const head = ws.addRow([...REGISTER_HEADERS]);
+  head.font = { bold: true };
+  for (let c = 1; c <= REGISTER_COLS; c++) {
+    const cell = head.getCell(c);
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEADER_ARGB } };
+    cell.alignment = { vertical: 'middle', wrapText: true };
+  }
+
+  let totalLine = 0;
+  let totalNet = 0;
+  data.register.forEach((r, idx) => {
+    const first = r.firstOfBill;
+    const row = ws.addRow([
+      r.no,
+      first ? r.billNo : '',
+      first ? r.receiptNo : '',
+      first ? r.date : '',
+      first ? r.time : '',
+      first ? r.channel : '',
+      r.product,
+      r.qty,
+      r.unitPrice,
+      r.lineTotal,
+      first && r.billDiscount ? r.billDiscount : null,
+      first ? r.billNet ?? 0 : null,
+      first ? r.billPayment ?? '' : '',
+      first ? r.billNote ?? '' : '',
+    ]);
+    [9, 10, 11, 12].forEach((c) => { row.getCell(c).numFmt = MONEY_FMT; });
+    if (idx % 2 === 1) { // alternate every row, like the reference workbook
+      for (let c = 1; c <= REGISTER_COLS; c++) {
+        row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ZEBRA_ARGB } };
+      }
+    }
+    totalLine += r.lineTotal;
+    if (first) totalNet += r.billNet ?? 0;
+  });
+
+  const totalRow = ws.addRow(['', '', '', '', '', '', 'รวม', '', '', totalLine, '', totalNet, '', '']);
+  totalRow.font = { bold: true };
+  for (let c = 1; c <= REGISTER_COLS; c++) {
+    totalRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEADER_ARGB } };
+  }
+  totalRow.getCell(10).numFmt = MONEY_FMT;
+  totalRow.getCell(12).numFmt = MONEY_FMT;
+
+  ws.views = [{ state: 'frozen', ySplit: 2 }];
 }
 
 /**
@@ -31,6 +108,9 @@ export async function downloadSalesReportExcel(data: SalesReportData, storeName:
     data.mode === 'daily'
       ? `รายวัน — ${thaiDate(data.from)}`
       : `รายเดือน / ช่วงวันที่ — ${thaiDate(data.from)} ถึง ${thaiDate(data.to)}`;
+
+  // ── Register sheet (primary — mirrors the on-screen register) ────────────────
+  addRegisterSheet(wb, data);
 
   // ── Summary sheet ──────────────────────────────────────────────────────────
   const s = wb.addWorksheet('สรุป');

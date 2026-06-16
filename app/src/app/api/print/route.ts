@@ -116,6 +116,7 @@ interface PrintBody {
   paymentLabel: string;
   cashGiven?: number;
   memberName?: string;
+  salesName?: string;
 }
 
 function buildESCPOS(data: PrintBody): Buffer {
@@ -130,7 +131,6 @@ function buildESCPOS(data: PrintBody): Buffer {
     line(data.storeName),
     cmd(GS,  0x21, 0x00),
     line('ใบเสร็จรับเงิน'),
-    line('ต้นฉบับ'),
     line(dash),
     cmd(ESC, 0x61, 0x00),  // left
   ];
@@ -146,6 +146,7 @@ function buildESCPOS(data: PrintBody): Buffer {
   parts.push(line(`ออเดอร์: #${data.orderNumber}`));
   parts.push(line(new Date().toLocaleString('th-TH')));
   if (data.memberName) parts.push(line(`ลูกค้า: ${data.memberName}`));
+  if (data.salesName) parts.push(line(`เซลล์: ${data.salesName}`));
   parts.push(line(dash));
 
   // Items header
@@ -165,6 +166,7 @@ function buildESCPOS(data: PrintBody): Buffer {
   parts.push(line(leftRight('รวมทั้งสิ้น (บาท)', fmt2(data.total))));
   parts.push(cmd(ESC, 0x45, 0x00)); // bold off
   parts.push(line(`(${bahtText(data.total)})`));
+  parts.push(line('ราคารวมภาษีมูลค่าเพิ่ม 7% แล้ว (VAT included)'));
   parts.push(line(`ชำระ: ${data.paymentLabel}`));
 
   if (data.cashGiven != null) {

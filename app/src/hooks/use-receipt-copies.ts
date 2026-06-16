@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api-client';
-import { parseModifiers } from '@/hooks/use-orders';
+import { parseModifiers, displayOrderNo } from '@/hooks/use-orders';
 import type { ReceiptData } from '@/components/screens/receipt-modal';
 import type { PrintReceiptArgs } from '@/hooks/use-printer';
 
@@ -20,6 +20,9 @@ export interface OrderItemFull {
 export interface OrderFull {
   id: string;
   order_number: number;
+  daily_number?: number;
+  business_date?: string;
+  receipt_no?: string;
   store_id: string;
   customer_id: string | null;
   status: string;
@@ -79,12 +82,13 @@ function mapItems(o: OrderFull) {
 export function mapOrderToReceipt(o: OrderFull): ReceiptData {
   const discount = Number(o.discount);
   return {
-    orderNumber: String(o.order_number),
+    orderNumber: String(displayOrderNo(o)),
     items: mapItems(o),
     subtotal: Number(o.subtotal),
     total: Number(o.total),
     paymentMethod: o.payment_method ?? '',
     paymentLabel: paymentLabel(o.payment_method),
+    ...(o.receipt_no ? { receiptNo: o.receipt_no } : {}),
     ...(discount > 0 ? { discount } : {}),
   };
 }
@@ -92,8 +96,9 @@ export function mapOrderToReceipt(o: OrderFull): ReceiptData {
 /** Order → print job (usePrinter().printReceipt). Marked as a copy with the
  *  original order date so the reprint shows when the sale actually happened. */
 export function mapOrderToPrintArgs(o: OrderFull): PrintReceiptArgs {
+  const discount = Number(o.discount);
   return {
-    orderNumber: String(o.order_number),
+    orderNumber: String(displayOrderNo(o)),
     items: mapItems(o),
     subtotal: Number(o.subtotal),
     total: Number(o.total),
@@ -101,6 +106,10 @@ export function mapOrderToPrintArgs(o: OrderFull): PrintReceiptArgs {
     // the raw string — passing the Thai label directly prints it verbatim.
     paymentMethod: paymentLabel(o.payment_method),
     issuedAt: new Date(o.created_at),
+    ...(o.receipt_no ? { receiptNo: o.receipt_no } : {}),
+    // Historical orders only carry the discount total (no per-promo breakdown
+    // or points), so reprints show a single "ส่วนลด" line — no breakdown/points.
+    ...(discount > 0 ? { discount } : {}),
     copy: true,
   };
 }

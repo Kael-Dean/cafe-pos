@@ -1,8 +1,25 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import Icon from '../icons';
 import { bahtText } from '@/lib/baht-text';
+import { makeInvoiceNo } from '@/lib/receipt-number';
+
+/**
+ * The preview reproduces a physical 80mm thermal slip, which is light paper
+ * with dark ink in BOTH themes (it is a representation of a real printout, not
+ * app chrome). These are intentionally NOT theme tokens — they stay constant so
+ * the preview always reads as paper. They are tinted toward the espresso brand
+ * hue rather than pure #fff / #000, per the no-pure-black/white design rule.
+ */
+const PAPER = '#FFFEFB';
+const PAPER_TRAY = '#EFE9E0';
+const PAPER_BORDER = '#E5E0D5';
+const INK = '#1C140D';
+const INK_MUTED = '#7A6E60';
+const INK_SOFT = '#4A3B2C';
+const DASH = '#B6A992';
 
 export interface ReceiptItem {
   name: string;
@@ -13,6 +30,9 @@ export interface ReceiptItem {
 
 export interface ReceiptData {
   orderNumber: string;
+  /** Backend-generated receipt number ("เลขที่:"), printed verbatim. Falls back
+   *  to a client-computed IV string only when the backend didn't supply one. */
+  receiptNo?: string;
   items: ReceiptItem[];
   subtotal: number;
   total: number;
@@ -21,8 +41,22 @@ export interface ReceiptData {
   cashGiven?: number;
   // ── Membership (server-computed; present when a member was attached) ──
   discount?: number;
+  /** Per-line discount breakdown (promotions + member reward), shown above the
+   *  total. Amounts are the cashier-side estimate; the total uses the server's
+   *  authoritative `discount`. Normally they agree. */
+  discountLines?: { label: string; amount: number }[];
   memberName?: string;
+  salesName?: string;
   pointsEarned?: number;
+  /** Points spent on a redemption this bill (= program.points_to_redeem). Earn
+   *  and redeem are mutually exclusive per order, so at most one of
+   *  pointsEarned / pointsRedeemed is non-zero. */
+  pointsRedeemed?: number;
+  /** What was redeemed (e.g. free-item product name), shown next to the spend. */
+  rewardLabel?: string;
+  /** Member's point balance AFTER this bill posted (client-computed:
+   *  balanceBefore + earned − redeemed). */
+  pointsBalanceAfter?: number;
   rewardRedeemed?: boolean;
 }
 
@@ -42,22 +76,103 @@ interface Props {
   issuedAt?: Date;
   /** Render as a duplicate ("สำเนา") instead of the original. */
   copy?: boolean;
+  /** When provided, shows a danger "ยกเลิกใบเสร็จ" action in the footer that
+   *  reverts the sale (stock + money) via the order-cancel flow. */
+  onCancel?: () => void;
+  /** When provided, shows a date picker that backdates the order on the server
+   *  (for entering past sales). Receives "YYYY-MM-DD"; resolves once persisted. */
+  onSaveDate?: (businessDateISO: string) => Promise<void>;
+}
+
+/** Local calendar day as "YYYY-MM-DD" (matches <input type="date">). */
+function toYMD(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Combine a "YYYY-MM-DD" day with the time-of-day from another Date. */
+function combineDateTime(ymd: string, timeFrom: Date): Date {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(y, m - 1, d, timeFrom.getHours(), timeFrom.getMinutes(), timeFrom.getSeconds());
 }
 
 export const DEFAULT_STORE: StoreInfo = {
   name: 'ร้านตะวันอ้อมข้าว',
-  address: '123 ถ.ราชดำเนิน ต.ในเมือง อ.เมืองสุรินทร์ จ.สุรินทร์ 32000',
-  taxId: '0105544000001',
+  address: '126 หมู่ 4 ตำบลตาอ็อง อำเภอเมืองสุรินทร์ จังหวัดสุรินทร์ 32000',
+  taxId: '0993000134281',
   branch: 'สาขาที่ 00001',
-  phone: '044-511-234',
+  phone: '062-334-5526',
 };
 
-export default function ReceiptModal({ data, onClose, onPrint, issuedAt, copy }: Props) {
+/**
+ * Modal a11y: trap focus inside the dialog, close on Esc, restore focus to the
+ * opener on unmount. The visual open/close stays on the existing modal-in CSS
+ * animation — this only wires keyboard + focus behaviour.
+ */
+function useModalA11y(onClose: () => void) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    const node = ref.current;
+
+    const focusables = () =>
+      Array.from(
+        node?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      ).filter((el) => el.offsetParent !== null);
+
+    focusables()[0]?.focus({ preventScroll: true });
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.stopPropagation(); onClose(); return; }
+      if (e.key !== 'Tab') return;
+      const items = focusables();
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      opener?.focus?.();
+    };
+    // Runs once for the modal's lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return ref;
+}
+
+export default function ReceiptModal({ data, onClose, onPrint, issuedAt, copy, onCancel, onSaveDate }: Props) {
   const [isPrinting, setIsPrinting] = useState(false);
+  const dialogRef = useModalA11y(onClose);
 
   const now = issuedAt ?? new Date();
-  const buddhistYear = now.getFullYear() + 543;
-  const invoiceNo = `IV${buddhistYear}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(data.orderNumber).padStart(4, '0')}`;
+  const invoiceNo = data.receiptNo ?? makeInvoiceNo(String(data.orderNumber), now);
+
+  // ── Backdating: pick a day, persist to the server (for past-sale entry) ──
+  const originalDate = toYMD(now);
+  const [pickedDate, setPickedDate] = useState(originalDate);
+  const [savingDate, setSavingDate] = useState(false);
+  // The slip + header reflect the chosen day (with the original time-of-day) so
+  // the preview matches before printing; the server receipt no. updates on save.
+  const shownDate = onSaveDate ? combineDateTime(pickedDate, now) : now;
+  const dateStr = shownDate.toLocaleString('th-TH');
+  const todayYMD = toYMD(new Date());
+  const dateChanged = onSaveDate != null && pickedDate !== originalDate;
+
+  const handleSaveDate = useCallback(async () => {
+    if (!onSaveDate || savingDate || pickedDate === originalDate) return;
+    setSavingDate(true);
+    try { await onSaveDate(pickedDate); }
+    catch { /* parent surfaces the error toast */ }
+    finally { setSavingDate(false); }
+  }, [onSaveDate, savingDate, pickedDate, originalDate]);
+
   const formatDate = (d: Date) => d.toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' });
   const formatTime = (d: Date) => d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const fmt = (n: number) => n.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -73,7 +188,13 @@ export default function ReceiptModal({ data, onClose, onPrint, issuedAt, copy }:
 
   const handleBrowserPrint = () => window.print();
 
-  return (
+  // Portal to <body>: screen roots animate in via GSAP (useFadeRise), which
+  // leaves an inline `transform` on the ancestor. A non-none transform makes it
+  // the containing block for `position: fixed`, trapping this overlay inside the
+  // page column instead of the viewport. Portaling escapes that — and also makes
+  // `.receipt-print-root` a direct child of <body> so the @media print rule
+  // (`body > *:not(.receipt-print-root)`) actually isolates the slip.
+  const overlay = (
     <>
       <style>{`
         @media print {
@@ -81,7 +202,9 @@ export default function ReceiptModal({ data, onClose, onPrint, issuedAt, copy }:
           .receipt-print-root { position: fixed; inset: 0; display: block !important; overflow: visible; background: white; }
           .receipt-print-root .receipt-modal-shell { all: unset; display: block; }
           .receipt-print-root .receipt-no-print { display: none !important; }
+          .receipt-print-root .receipt-scroll { max-height: none !important; overflow: visible !important; padding: 0 !important; background: white !important; }
           .receipt-print-root .receipt-paper { box-shadow: none !important; border: none !important; margin: 0 !important; border-radius: 0 !important; max-height: none !important; overflow: visible !important; }
+          .receipt-print-root .receipt-edit-input { border: none !important; padding: 0 !important; background: transparent !important; }
         }
       `}</style>
 
@@ -89,29 +212,35 @@ export default function ReceiptModal({ data, onClose, onPrint, issuedAt, copy }:
         className="receipt-print-root"
         style={{
           position: 'fixed', inset: 0, zIndex: 300,
-          background: 'rgba(20, 12, 6, 0.75)',
+          background: 'var(--color-scrim, rgba(26, 16, 8, 0.55))',
           backdropFilter: 'blur(6px)',
-          display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
-          padding: '20px 16px 40px',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: 'var(--space-4)',
           overflowY: 'auto',
         }}
         onClick={onClose}
       >
         <div
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label={copy ? 'สำเนาใบเสร็จรับเงิน' : 'ใบเสร็จรับเงิน'}
+          aria-busy={isPrinting || undefined}
           className="receipt-modal-shell"
           onClick={e => e.stopPropagation()}
           style={{
             width: '100%', maxWidth: 460,
+            maxHeight: 'calc(100dvh - (var(--space-4) * 2))',
             background: 'var(--color-surface)',
-            borderRadius: 20,
-            boxShadow: '0 32px 80px rgba(61,40,23,0.28), 0 8px 24px rgba(61,40,23,0.14)',
-            display: 'flex', flexDirection: 'column',
+            borderRadius: 'var(--radius-xl)',
+            boxShadow: 'var(--shadow-lg)',
+            display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden',
             animation: 'modal-in var(--dur-slow) var(--ease-out)',
           }}
         >
           {/* ── Toolbar ── */}
           <div className="receipt-no-print" style={{
-            padding: '14px 20px',
+            padding: '14px 20px', flexShrink: 0,
             display: 'flex', alignItems: 'center', gap: 10,
             borderBottom: '1px solid var(--color-border)',
           }}>
@@ -125,7 +254,7 @@ export default function ReceiptModal({ data, onClose, onPrint, issuedAt, copy }:
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 14, fontWeight: 700 }}>ใบเสร็จรับเงิน</div>
               <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
-                ออเดอร์ #{data.orderNumber} · {formatDate(now)} {formatTime(now)}
+                ออเดอร์ #{data.orderNumber} · {formatDate(shownDate)} {formatTime(shownDate)}
               </div>
             </div>
             <button onClick={onClose} aria-label="ปิด" className="icon-btn hit-44" style={{
@@ -136,11 +265,56 @@ export default function ReceiptModal({ data, onClose, onPrint, issuedAt, copy }:
             </button>
           </div>
 
-          {/* ── Receipt preview ── */}
-          <div style={{ padding: '20px', overflowY: 'auto', maxHeight: '68vh', background: '#EFE9E0' }}>
+          {/* ── Backdate editor (server-persisted; for keying past sales) ── */}
+          {onSaveDate && (
+            <div className="receipt-no-print" style={{
+              padding: 'var(--space-3) var(--space-5)', flexShrink: 0,
+              borderBottom: '1px solid var(--color-border)', background: 'var(--color-surface-2)',
+              display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap',
+            }}>
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text)' }}>วันที่ใบเสร็จ</div>
+                <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>แก้เพื่อคีย์ขายย้อนหลัง</div>
+              </div>
+              <input
+                type="date"
+                aria-label="วันที่ใบเสร็จ"
+                value={pickedDate}
+                max={todayYMD}
+                onChange={e => setPickedDate(e.target.value)}
+                className="input-std"
+                style={{
+                  padding: '8px var(--space-3)', minHeight: 40, borderRadius: 'var(--radius-md)', fontSize: 14,
+                  border: '1px solid var(--color-border)', background: 'var(--color-surface)', color: 'var(--color-text)',
+                }}
+              />
+              <button
+                onClick={handleSaveDate}
+                disabled={!dateChanged || savingDate}
+                aria-busy={savingDate || undefined}
+                className="pressable"
+                style={{
+                  padding: '9px var(--space-4)', minHeight: 40, borderRadius: 'var(--radius-md)', fontSize: 13, fontWeight: 700,
+                  display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
+                  background: (!dateChanged || savingDate) ? 'var(--color-border)' : 'var(--color-primary)',
+                  color: (!dateChanged || savingDate) ? 'var(--color-text-muted)' : 'var(--color-text-inverse)',
+                  cursor: (!dateChanged || savingDate) ? 'default' : 'pointer',
+                }}
+              >
+                {savingDate
+                  ? <span className="spinner" aria-hidden style={{ width: 14, height: 14 }} />
+                  : <Icon name="check" size={14} />}
+                บันทึกวันที่
+              </button>
+            </div>
+          )}
+
+          {/* ── Receipt preview (tinted paper tray; stays light in both themes) ── */}
+          <div className="receipt-scroll" style={{ padding: 'var(--space-5)', overflowY: 'auto', flex: 1, minHeight: 0, background: PAPER_TRAY }}>
             <ReceiptPaper
               data={data}
-              invoiceNo={invoiceNo} now={now} copy={copy}
+              invoiceNo={invoiceNo} now={shownDate} copy={copy}
+              dateStr={dateStr}
               fmt={fmt} formatDate={formatDate} formatTime={formatTime}
               storeInfo={DEFAULT_STORE}
             />
@@ -148,27 +322,40 @@ export default function ReceiptModal({ data, onClose, onPrint, issuedAt, copy }:
 
           {/* ── Footer actions ── */}
           <div className="receipt-no-print" style={{
-            padding: '12px 20px', borderTop: '1px solid var(--color-border)',
-            display: 'flex', gap: 8, alignItems: 'center',
+            padding: 'var(--space-3) var(--space-5)', flexShrink: 0, borderTop: '1px solid var(--color-border)',
+            display: 'flex', gap: 'var(--space-2)', alignItems: 'center', flexWrap: 'wrap', rowGap: 'var(--space-2)',
           }}>
-            <button onClick={handleBrowserPrint} className="icon-btn pressable" style={{
-              padding: '8px 14px', borderRadius: 8, fontSize: 13, minHeight: 44,
+            {onCancel && (
+              <button onClick={onCancel} disabled={isPrinting} className="icon-btn pressable" style={{
+                padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', fontSize: 13, minHeight: 44,
+                border: '1px solid var(--color-danger)',
+                display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
+                color: 'var(--color-danger)', background: 'var(--color-danger-50)',
+                opacity: isPrinting ? 0.5 : 1,
+              }}>
+                <Icon name="trash" size={14} /> ยกเลิกใบเสร็จ
+              </button>
+            )}
+            <button onClick={handleBrowserPrint} disabled={isPrinting} className="icon-btn pressable" style={{
+              padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', fontSize: 13, minHeight: 44,
               border: '1px solid var(--color-border)',
-              display: 'flex', alignItems: 'center', gap: 6,
+              display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
               color: 'var(--color-text-secondary)',
+              opacity: isPrinting ? 0.5 : 1,
             }}>
               <Icon name="print" size={14} /> บันทึก PDF
             </button>
             <div style={{ flex: 1 }} />
             <button onClick={onClose} className="icon-btn" style={{
-              padding: '8px 16px', borderRadius: 8, fontSize: 13, minHeight: 44,
+              padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', fontSize: 13, minHeight: 44,
               color: 'var(--color-text-secondary)',
             }}>ปิด</button>
             <button onClick={handlePrint} disabled={isPrinting} aria-busy={isPrinting || undefined} className="pressable" style={{
-              padding: '9px 22px', borderRadius: 8, fontSize: 14, fontWeight: 700, minHeight: 44,
-              background: isPrinting ? 'var(--color-border)' : 'var(--color-primary)',
-              color: 'white', display: 'flex', alignItems: 'center', gap: 8,
-              opacity: isPrinting ? 0.7 : 1,
+              padding: '9px 22px', borderRadius: 'var(--radius-md)', fontSize: 14, fontWeight: 700, minHeight: 44,
+              background: isPrinting ? 'var(--color-surface-2)' : 'var(--color-primary)',
+              color: isPrinting ? 'var(--color-text-secondary)' : 'var(--color-text-inverse)',
+              display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
+              opacity: isPrinting ? 0.85 : 1,
               cursor: isPrinting ? 'wait' : 'pointer',
             }}>
               {isPrinting ? <span className="spinner" aria-hidden /> : <Icon name="printer" size={16} />}
@@ -179,6 +366,8 @@ export default function ReceiptModal({ data, onClose, onPrint, issuedAt, copy }:
       </div>
     </>
   );
+
+  return typeof document !== 'undefined' ? createPortal(overlay, document.body) : null;
 }
 
 /* ─── Faithful thermal-receipt preview ──────────────────────────────
@@ -192,8 +381,11 @@ const MONO: React.CSSProperties = {
 };
 
 function Dash() {
-  return <div aria-hidden style={{ borderTop: '1px dashed #B6A992', margin: '8px 0' }} />;
+  return <div aria-hidden style={{ borderTop: `1px dashed ${DASH}`, margin: '8px 0' }} />;
 }
+
+/** Paper-red for the "สำเนา" copy mark; fixed so it reads on the light slip in both themes. */
+const PAPER_COPY = '#B83A3A';
 
 function TRow({ l, r, bold, muted, indent }: {
   l: React.ReactNode; r?: React.ReactNode; bold?: boolean; muted?: boolean; indent?: boolean;
@@ -204,7 +396,7 @@ function TRow({ l, r, bold, muted, indent }: {
       padding: '1px 0',
       paddingLeft: indent ? 16 : 0,
       fontWeight: bold ? 700 : 400,
-      color: muted ? '#7A6E60' : '#1A1A1A',
+      color: muted ? INK_MUTED : INK,
     }}>
       <span style={{ wordBreak: 'break-word' }}>{l}</span>
       {r != null && <span style={{ ...MONO, flexShrink: 0, fontWeight: bold ? 700 : 400 }}>{r}</span>}
@@ -212,24 +404,29 @@ function TRow({ l, r, bold, muted, indent }: {
   );
 }
 
-export function ReceiptPaper({ data, invoiceNo, now, copy, fmt, storeInfo }: {
+export function ReceiptPaper({ data, invoiceNo, now, copy, dateStr, editableDate, onDateChange, fmt, storeInfo }: {
   data: ReceiptData; invoiceNo: string; now: Date; copy?: boolean;
+  /** Display string for the date/time line; defaults to `now` in th-TH. */
+  dateStr?: string;
+  /** When true, the date line becomes an editable input (frontend-only). */
+  editableDate?: boolean;
+  onDateChange?: (v: string) => void;
   fmt: (n: number) => string;
   formatDate?: (d: Date) => string; formatTime?: (d: Date) => string;
   storeInfo?: StoreInfo;
 }) {
   const S = { ...DEFAULT_STORE, ...storeInfo };
-  const dateStr = now.toLocaleString('th-TH'); // matches the bridge's Date.toLocaleString('th-TH')
+  const dateText = dateStr ?? now.toLocaleString('th-TH'); // matches the bridge's Date.toLocaleString('th-TH')
 
   return (
     <div className="receipt-paper" style={{
-      background: '#FFFFFF',
+      background: PAPER,
       width: '100%', maxWidth: 340, margin: '0 auto',
-      border: '1px solid #E5E0D5', borderRadius: 4,
+      border: `1px solid ${PAPER_BORDER}`, borderRadius: 4,
       boxShadow: '0 6px 22px rgba(61,40,23,0.16)',
       padding: '20px 18px 24px',
       fontFamily: '"IBM Plex Sans Thai", "Sarabun", system-ui, sans-serif',
-      fontSize: 12.5, lineHeight: 1.5, color: '#1A1A1A',
+      fontSize: 12.5, lineHeight: 1.5, color: INK,
     }}>
       {/* ── Header (centered, like double-height storeName on the printer) ── */}
       <div style={{ textAlign: 'center' }}>
@@ -241,7 +438,7 @@ export function ReceiptPaper({ data, invoiceNo, now, copy, fmt, storeInfo }: {
         />
         <div style={{ fontSize: 17, fontWeight: 800, letterSpacing: '0.01em' }}>{S.name}</div>
         <div style={{ marginTop: 3 }}>ใบเสร็จรับเงิน</div>
-        <div style={{ color: copy ? 'var(--color-danger)' : '#7A6E60', fontWeight: copy ? 700 : 400 }}>{copy ? 'สำเนา' : 'ต้นฉบับ'}</div>
+        {copy && <div style={{ color: PAPER_COPY, fontWeight: 700 }}>สำเนา</div>}
       </div>
 
       <Dash />
@@ -257,8 +454,27 @@ export function ReceiptPaper({ data, invoiceNo, now, copy, fmt, storeInfo }: {
       {/* ── Order meta ── */}
       <div>เลขที่: <span style={MONO}>{invoiceNo}</span></div>
       <div>ออเดอร์: <span style={MONO}>#{data.orderNumber}</span></div>
-      <div style={{ color: '#7A6E60' }}>{dateStr}</div>
+      {editableDate ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <input
+            className="receipt-edit-input"
+            value={dateText}
+            onChange={e => onDateChange?.(e.target.value)}
+            aria-label="แก้วันที่ในใบเสร็จ"
+            spellCheck={false}
+            style={{
+              ...MONO, flex: 1, minWidth: 0, color: INK_MUTED,
+              padding: '1px 5px', borderRadius: 4,
+              border: `1px solid ${DASH}`, background: PAPER,
+              fontSize: 'inherit', lineHeight: 'inherit',
+            }}
+          />
+        </div>
+      ) : (
+        <div style={{ color: INK_MUTED }}>{dateText}</div>
+      )}
       {data.memberName && <div>ลูกค้า: {data.memberName}</div>}
+      {data.salesName && <div>เซลล์: {data.salesName}</div>}
 
       <Dash />
 
@@ -278,8 +494,21 @@ export function ReceiptPaper({ data, invoiceNo, now, copy, fmt, storeInfo }: {
       <Dash />
 
       {/* ── Summary ── */}
+      {data.discount != null && data.discount > 0 && (
+        <>
+          <TRow l="รวม" r={fmt(data.subtotal)} />
+          {data.discountLines && data.discountLines.length > 0 ? (
+            data.discountLines.map((d, i) => (
+              <TRow key={i} indent muted l={d.label} r={`-${fmt(d.amount)}`} />
+            ))
+          ) : (
+            <TRow muted l="ส่วนลด" r={`-${fmt(data.discount)}`} />
+          )}
+        </>
+      )}
       <TRow bold l="รวมทั้งสิ้น (บาท)" r={fmt(data.total)} />
-      <div style={{ color: '#4A3B2C' }}>({bahtText(data.total)})</div>
+      <div style={{ color: INK_SOFT }}>({bahtText(data.total)})</div>
+      <div style={{ color: INK_MUTED, fontSize: 11.5 }}>ราคารวมภาษีมูลค่าเพิ่ม 7% แล้ว (VAT included)</div>
       <div>ชำระ: {data.paymentLabel}</div>
       {data.cashGiven != null && (
         <>
@@ -287,6 +516,28 @@ export function ReceiptPaper({ data, invoiceNo, now, copy, fmt, storeInfo }: {
           <TRow l="เงินทอน" r={fmt(data.cashGiven - data.total)} />
         </>
       )}
+
+      {/* ── Membership points (earn OR redeem — mutually exclusive per bill) ── */}
+      {data.memberName &&
+        (((data.pointsEarned ?? 0) > 0) ||
+          ((data.pointsRedeemed ?? 0) > 0) ||
+          data.pointsBalanceAfter != null) && (
+          <>
+            <Dash />
+            {(data.pointsRedeemed ?? 0) > 0 && (
+              <TRow
+                l={`ใช้แต้มแลก${data.rewardLabel ? `: ${data.rewardLabel}` : ''}`}
+                r={`-${data.pointsRedeemed!.toLocaleString('th-TH')} แต้ม`}
+              />
+            )}
+            {(data.pointsEarned ?? 0) > 0 && (
+              <TRow l="ได้รับแต้ม" r={`+${data.pointsEarned!.toLocaleString('th-TH')} แต้ม`} />
+            )}
+            {data.pointsBalanceAfter != null && (
+              <TRow bold l="แต้มสะสมคงเหลือ" r={`${data.pointsBalanceAfter.toLocaleString('th-TH')} แต้ม`} />
+            )}
+          </>
+        )}
 
       <Dash />
 

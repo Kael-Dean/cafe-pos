@@ -3,6 +3,8 @@
 import { useCallback } from 'react';
 import { DEFAULT_STORE, type StoreInfo } from '@/components/screens/receipt-modal';
 import { sendPrintJob } from '@/lib/printer-bridge';
+import { makeInvoiceNo } from '@/lib/receipt-number';
+import { buildReceiptLines } from '@/lib/receipt-lines';
 
 const PAY_LABEL: Record<string, string> = {
   cash: 'เงินสด',
@@ -13,12 +15,24 @@ const PAY_LABEL: Record<string, string> = {
 
 export interface PrintReceiptArgs {
   orderNumber: string;
+  /** Backend-generated receipt number, printed verbatim. Falls back to a
+   *  client-computed IV string only when absent (pre-backend orders). */
+  receiptNo?: string;
   items: Array<{ name: string; qty: number; unitPrice: number; mods?: string[] }>;
   subtotal: number;
   total: number;
   paymentMethod: string;
   cashGiven?: number;
   memberName?: string;
+  salesName?: string;
+  /** Total discount + per-line breakdown (promotions + member reward). */
+  discount?: number;
+  discountLines?: { label: string; amount: number }[];
+  /** Membership points (earn OR redeem — mutually exclusive per bill). */
+  pointsEarned?: number;
+  pointsRedeemed?: number;
+  rewardLabel?: string;
+  pointsBalanceAfter?: number;
   /** Original order date/time — used on reprinted copies so they show when the
    *  order actually happened (not "now"). Defaults to the current time. */
   issuedAt?: Date;
@@ -26,12 +40,6 @@ export interface PrintReceiptArgs {
   copy?: boolean;
   /** Optional store-header override (only defined fields win); defaults to DEFAULT_STORE. */
   store?: Partial<StoreInfo>;
-}
-
-// Receipt running number, mirrors the on-screen receipt modal.
-function makeInvoiceNo(orderNumber: string, when: Date = new Date()): string {
-  const buddhistYear = when.getFullYear() + 543;
-  return `IV${buddhistYear}${String(when.getMonth() + 1).padStart(2, '0')}${String(when.getDate()).padStart(2, '0')}-${orderNumber.padStart(4, '0')}`;
 }
 
 export function usePrinter() {
@@ -47,22 +55,59 @@ export function usePrinter() {
       branch:  o?.branch?.trim()  || DEFAULT_STORE.branch,
       phone:   o?.phone?.trim()   || DEFAULT_STORE.phone,
     };
-    const body: Record<string, unknown> = {
+    const invoiceNo    = args.receiptNo ?? makeInvoiceNo(args.orderNumber, args.issuedAt);
+    const paymentLabel = PAY_LABEL[args.paymentMethod] ?? args.paymentMethod;
+    const dateStr      = (args.issuedAt ?? new Date()).toLocaleString('th-TH');
+
+    // The full receipt layout is built HERE and shipped as a neutral line-list.
+    // The bridge just renders it (ESC/POS for LAN, raster for USB) — so future
+    // receipt changes are an app-only deploy, never a bridge reinstall.
+    const lines = buildReceiptLines({
       storeName:    store.name,
       storeAddress: store.address,
       storeTaxId:   store.taxId,
       storeBranch:  store.branch,
       storePhone:   store.phone,
-      invoiceNo:    makeInvoiceNo(args.orderNumber, args.issuedAt),
+      invoiceNo,
+      orderNumber:  args.orderNumber,
+      dateStr,
+      copy:         args.copy,
+      memberName:   args.memberName,
+      salesName:    args.salesName,
+      items:        args.items,
+      subtotal:     args.subtotal,
+      total:        args.total,
+      discount:     args.discount,
+      discountLines: args.discountLines,
+      paymentLabel,
+      cashGiven:    args.cashGiven,
+      pointsEarned: args.pointsEarned,
+      pointsRedeemed: args.pointsRedeemed,
+      rewardLabel:  args.rewardLabel,
+      pointsBalanceAfter: args.pointsBalanceAfter,
+    });
+
+    const body: Record<string, unknown> = {
+      // Neutral layout — the bridge prefers this when present.
+      lines,
+      // Flat fields kept for backward-compat: an older bridge that doesn't yet
+      // understand `lines` falls back to building the receipt from these.
+      storeName:    store.name,
+      storeAddress: store.address,
+      storeTaxId:   store.taxId,
+      storeBranch:  store.branch,
+      storePhone:   store.phone,
+      invoiceNo,
       orderNumber:  args.orderNumber,
       items:        args.items,
       subtotal:     args.subtotal,
       total:        args.total,
-      paymentLabel: PAY_LABEL[args.paymentMethod] ?? args.paymentMethod,
+      paymentLabel,
     };
 
     if (args.cashGiven != null) body.cashGiven = args.cashGiven;
     if (args.memberName) body.memberName = args.memberName;
+    if (args.salesName) body.salesName = args.salesName;
     if (args.issuedAt) body.issuedAt = args.issuedAt.toISOString();
     if (args.copy) body.copy = true;
 

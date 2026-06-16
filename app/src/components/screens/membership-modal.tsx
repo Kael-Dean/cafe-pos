@@ -2,11 +2,13 @@
 
 import { useState, useEffect, useRef } from 'react';
 import Icon from '../icons';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useToast, Tag, baht } from '../app-common';
 import {
   useLookupMember,
   useRegisterMember,
   useMembers,
+  isMemberNameTaken,
   type AccountRead,
   type LookupResponse,
   type RewardProductRead,
@@ -35,10 +37,52 @@ const REWARD_DESC: Record<string, string> = {
 };
 
 const IS: React.CSSProperties = {
-  width: '100%', padding: '10px 12px', borderRadius: 8, boxSizing: 'border-box',
+  width: '100%', padding: '10px var(--space-3)', minHeight: 44, borderRadius: 'var(--radius-md)', boxSizing: 'border-box',
   border: '1px solid var(--color-border)', background: 'var(--color-surface)',
   color: 'var(--color-text)', fontSize: 14, outline: 'none',
 };
+
+/**
+ * Modal a11y: focus trap, Esc to close, restore focus to the opener. Mirrors the
+ * role="dialog"/aria-modal pattern used in payment-modal / receipt-modal.
+ */
+function useModalA11y(onClose: () => void) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    const node = ref.current;
+
+    const focusables = () =>
+      Array.from(
+        node?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      ).filter((el) => el.offsetParent !== null);
+
+    focusables()[0]?.focus();
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.stopPropagation(); onClose(); return; }
+      if (e.key !== 'Tab') return;
+      const items = focusables();
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      opener?.focus?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return ref;
+}
 
 interface Props {
   onClose: () => void;
@@ -51,6 +95,7 @@ export default function MembershipModal({ onClose, onSelectMember, initialPhase 
   const toast = useToast();
   const lookup = useLookupMember();
   const register = useRegisterMember();
+  const dialogRef = useModalA11y(onClose);
 
   const [phase, setPhase] = useState<'lookup' | 'register'>(initialPhase);
   // True only when the register phase was reached via a failed phone lookup — drives the
@@ -115,6 +160,7 @@ export default function MembershipModal({ onClose, onSelectMember, initialPhase 
   // register form
   const [regName, setRegName] = useState('');
   const [regDob, setRegDob] = useState('');
+  const [checkingName, setCheckingName] = useState(false);
 
   const doLookup = async () => {
     const p = phone.trim();
@@ -160,6 +206,11 @@ export default function MembershipModal({ onClose, onSelectMember, initialPhase 
     if (!regName.trim()) { toast({ kind: 'warning', title: 'กรอกชื่อสมาชิก' }); return; }
     if (!phone.trim()) { toast({ kind: 'warning', title: 'กรอกเบอร์โทร' }); return; }
     try {
+      setCheckingName(true);
+      if (await isMemberNameTaken(regName)) {
+        toast({ kind: 'warning', title: 'ชื่อนี้มีสมาชิกอยู่แล้ว', msg: 'กรุณาใช้ชื่ออื่น หรือค้นหาสมาชิกเดิม' });
+        return;
+      }
       const account = await register.mutateAsync({
         name: regName.trim(),
         phone: phone.trim(),
@@ -170,6 +221,8 @@ export default function MembershipModal({ onClose, onSelectMember, initialPhase 
       onSelectMember({ account, program: null, redeemReward: false, rewardProduct: null });
     } catch (e: unknown) {
       toast({ kind: 'danger', title: String(e instanceof Error ? e.message : e) });
+    } finally {
+      setCheckingName(false);
     }
   };
 
@@ -188,21 +241,30 @@ export default function MembershipModal({ onClose, onSelectMember, initialPhase 
     });
   };
 
+  const busy = lookup.isPending || register.isPending || checkingName || (searchMode === 'name' && membersQuery.isFetching);
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{
-        width: 'min(480px, 92vw)', maxHeight: '90vh', display: 'flex', flexDirection: 'column',
-      }}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={phase === 'register' ? 'สมัครสมาชิกใหม่' : 'สมาชิก / สะสมแต้ม'}
+        aria-busy={busy || undefined}
+        className="modal-card"
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: 'min(480px, 92vw)', maxHeight: '90dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+      >
         {/* Header */}
-        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{ width: 44, height: 44, borderRadius: 12, background: 'var(--color-accent-50)', color: 'var(--color-accent-600)', display: 'grid', placeItems: 'center' }}>
+        <div style={{ padding: 'var(--space-5) var(--space-6)', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 'var(--space-4)' }}>
+          <div style={{ width: 44, height: 44, borderRadius: 'var(--radius-lg)', background: 'var(--color-accent-50)', color: 'var(--color-accent-600)', display: 'grid', placeItems: 'center' }}>
             <Icon name="user" size={22} />
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 17, fontWeight: 700 }}>{phase === 'register' ? 'สมัครสมาชิกใหม่' : 'สมาชิก / สะสมแต้ม'}</div>
             <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>{phase === 'register' ? 'กรอกข้อมูลเพื่อสมัครสมาชิก' : searchMode === 'name' ? 'ค้นหาด้วยชื่อสมาชิก' : 'ค้นหาด้วยเบอร์โทรศัพท์'}</div>
           </div>
-          <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, display: 'grid', placeItems: 'center', color: 'var(--color-text-secondary)' }}>
+          <button onClick={onClose} aria-label="ปิด" className="icon-btn hit-44" style={{ width: 32, height: 32, borderRadius: 'var(--radius-md)', display: 'grid', placeItems: 'center', color: 'var(--color-text-secondary)' }}>
             <Icon name="x" size={18} />
           </button>
         </div>
@@ -240,9 +302,10 @@ export default function MembershipModal({ onClose, onSelectMember, initialPhase 
                   onKeyDown={(e) => { if (e.key === 'Enter' && phase === 'lookup') doLookup(); }}
                 />
                 {phase === 'lookup' && (
-                  <button onClick={doLookup} disabled={lookup.isPending}
-                    style={{ padding: '10px 18px', borderRadius: 8, background: 'var(--color-primary)', color: 'white', fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap', cursor: 'pointer' }}>
-                    {lookup.isPending ? '...' : 'ค้นหา'}
+                  <button onClick={doLookup} disabled={lookup.isPending} className="pressable"
+                    style={{ padding: '10px var(--space-5)', minHeight: 44, borderRadius: 'var(--radius-md)', background: 'var(--color-primary)', color: 'var(--color-text-inverse)', fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                    {lookup.isPending ? <span className="spinner" aria-hidden style={{ width: 14, height: 14 }} /> : <Icon name="search" size={15} />}
+                    ค้นหา
                   </button>
                 )}
               </div>
@@ -262,24 +325,53 @@ export default function MembershipModal({ onClose, onSelectMember, initialPhase 
                   onKeyDown={(e) => { if (e.key === 'Enter') doNameSearch(); }}
                   autoFocus
                 />
-                <button onClick={doNameSearch} disabled={membersQuery.isFetching}
-                  style={{ padding: '10px 18px', borderRadius: 8, background: 'var(--color-primary)', color: 'white', fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap', cursor: 'pointer' }}>
-                  {membersQuery.isFetching ? '...' : 'ค้นหา'}
+                <button onClick={doNameSearch} disabled={membersQuery.isFetching} className="pressable"
+                  style={{ padding: '10px var(--space-5)', minHeight: 44, borderRadius: 'var(--radius-md)', background: 'var(--color-primary)', color: 'var(--color-text-inverse)', fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                  {membersQuery.isFetching ? <span className="spinner" aria-hidden style={{ width: 14, height: 14 }} /> : <Icon name="search" size={15} />}
+                  ค้นหา
                 </button>
               </div>
 
               {submittedName && !result?.found && (
-                <div style={{ marginTop: 14, display: 'grid', gap: 8 }}>
-                  {membersQuery.isFetching ? (
-                    <div style={{ fontSize: 13, color: 'var(--color-text-muted)', textAlign: 'center', padding: 8 }}>กำลังค้นหา…</div>
+                <div
+                  style={{
+                    marginTop: 'var(--space-4)', display: 'grid', gap: 'var(--space-2)', alignContent: 'start',
+                    // Reserve a stable height so the modal doesn't resize as the
+                    // result region toggles between skeleton / "ไม่พบ" / results.
+                    minHeight: 168,
+                    // Dim (not blank) while re-fetching a new term — keepPreviousData
+                    // keeps the old rows in place so nothing jumps.
+                    opacity: membersQuery.isFetching && !membersQuery.isLoading ? 0.55 : 1,
+                    transition: 'opacity 120ms var(--ease-out)',
+                  }}
+                  aria-busy={membersQuery.isFetching || undefined}
+                >
+                  {membersQuery.isLoading ? (
+                    // Skeleton rows that mirror the real member-result layout (name +
+                    // phone on the left, points + tier chip on the right). Shown only on
+                    // the first search — later keystrokes keep the previous results.
+                    Array.from({ length: 3 }).map((_, i) => (
+                      <div key={i} style={{
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--space-3)',
+                        padding: '10px var(--space-3)', borderRadius: 'var(--radius-md)',
+                        border: '1px solid var(--color-border)', background: 'var(--color-surface)',
+                      }}>
+                        <div style={{ display: 'grid', gap: 'var(--space-2)', flex: 1 }}>
+                          <Skeleton width="55%" height="var(--space-3)" />
+                          <Skeleton width="38%" height={10} />
+                        </div>
+                        <Skeleton width={54} height={24} radius="var(--radius-pill)" />
+                      </div>
+                    ))
                   ) : (membersQuery.data?.items.length ?? 0) === 0 ? (
-                    <div style={{ fontSize: 13, color: 'var(--color-text-muted)', textAlign: 'center', padding: 8 }}>ไม่พบสมาชิกชื่อนี้ — ลองค้นหาด้วยเบอร์โทร</div>
+                    <div style={{ fontSize: 13, color: 'var(--color-text-muted)', textAlign: 'center', padding: 'var(--space-2)' }}>ไม่พบสมาชิกชื่อนี้ ลองค้นหาด้วยเบอร์โทร</div>
                   ) : (
                     (membersQuery.data?.items ?? []).map((acc) => (
                       <button key={acc.id} onClick={() => selectFromNameResult(acc)} disabled={lookup.isPending}
+                        className="pressable"
                         style={{
-                          display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10,
-                          padding: '10px 12px', borderRadius: 8, textAlign: 'left', cursor: 'pointer',
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--space-3)',
+                          padding: '10px var(--space-3)', minHeight: 44, borderRadius: 'var(--radius-md)', textAlign: 'left', cursor: 'pointer',
                           border: '1px solid var(--color-border)', background: 'var(--color-surface)',
                         }}>
                         <div style={{ minWidth: 0 }}>
@@ -310,8 +402,8 @@ export default function MembershipModal({ onClose, onSelectMember, initialPhase 
                 </div>
               )}
               <div>
-                <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', display: 'block', marginBottom: 4 }}>ชื่อ *</label>
-                <input value={regName} onChange={(e) => setRegName(e.target.value)} style={IS} placeholder="ชื่อ-นามสกุล" />
+                <label htmlFor="reg-name" style={{ fontSize: 12, color: 'var(--color-text-secondary)', display: 'block', marginBottom: 4 }}>ชื่อ *</label>
+                <input id="reg-name" value={regName} onChange={(e) => setRegName(e.target.value)} required aria-required="true" style={IS} placeholder="ชื่อ-นามสกุล" />
               </div>
               <div>
                 <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', display: 'block', marginBottom: 4 }}>วันเกิด (ไม่บังคับ)</label>
@@ -372,12 +464,13 @@ export default function MembershipModal({ onClose, onSelectMember, initialPhase 
                           const selected = rewardProduct?.id === rp.id;
                           return (
                             <button key={rp.id} onClick={() => setRewardProduct(rp)}
+                              aria-pressed={selected} className="pressable"
                               style={{
                                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                                padding: '10px 12px', borderRadius: 8, fontSize: 13, fontWeight: 600, textAlign: 'left',
+                                padding: '10px var(--space-3)', minHeight: 44, borderRadius: 'var(--radius-md)', fontSize: 13, fontWeight: 600, textAlign: 'left',
                                 border: `1.5px solid ${selected ? 'var(--color-primary)' : 'var(--color-border)'}`,
                                 background: selected ? 'var(--color-primary)' : 'var(--color-surface)',
-                                color: selected ? 'white' : 'var(--color-text)', cursor: 'pointer',
+                                color: selected ? 'var(--color-text-inverse)' : 'var(--color-text)', cursor: 'pointer',
                               }}>
                               <span>{rp.name}</span>
                               <span className="num">{baht(Number(rp.price))}</span>
@@ -400,20 +493,21 @@ export default function MembershipModal({ onClose, onSelectMember, initialPhase 
         </div>
 
         {/* Footer */}
-        <div style={{ padding: '16px 24px', borderTop: '1px solid var(--color-border)', display: 'flex', gap: 10, background: 'var(--color-surface-2)' }}>
+        <div style={{ padding: 'var(--space-4) var(--space-6)', borderTop: '1px solid var(--color-border)', display: 'flex', gap: 'var(--space-3)', background: 'var(--color-surface-2)' }}>
           {phase === 'register' ? (
             <>
-              <button onClick={() => { setPhase('lookup'); setFromMiss(false); }} style={{ padding: '11px 18px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)', fontSize: 14, cursor: 'pointer' }}>ย้อนกลับ</button>
-              <button onClick={doRegister} disabled={register.isPending} style={{ flex: 1, padding: '11px 18px', borderRadius: 8, background: 'var(--color-accent)', color: 'var(--color-primary-700)', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
-                {register.isPending ? 'กำลังสมัคร...' : 'สมัครและแนบกับบิล'}
+              <button onClick={() => { setPhase('lookup'); setFromMiss(false); }} className="pressable" style={{ padding: '11px var(--space-5)', minHeight: 44, borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)', background: 'var(--color-surface)', color: 'var(--color-text)', fontSize: 14, cursor: 'pointer' }}>ย้อนกลับ</button>
+              <button onClick={doRegister} disabled={register.isPending || checkingName} className="pressable" style={{ flex: 1, padding: '11px var(--space-5)', minHeight: 44, borderRadius: 'var(--radius-md)', background: 'var(--color-accent)', color: 'var(--color-on-accent)', fontWeight: 700, fontSize: 14, cursor: 'pointer', opacity: (register.isPending || checkingName) ? 0.7 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-2)' }}>
+                {(checkingName || register.isPending) && <span className="spinner" aria-hidden style={{ width: 14, height: 14 }} />}
+                {checkingName ? 'กำลังตรวจสอบ...' : register.isPending ? 'กำลังสมัคร...' : 'สมัครและแนบกับบิล'}
               </button>
             </>
           ) : result?.found && result.account ? (
-            <button onClick={confirmAttach} style={{ flex: 1, padding: '11px 18px', borderRadius: 8, background: 'var(--color-primary)', color: 'white', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
+            <button onClick={confirmAttach} className="pressable" style={{ flex: 1, padding: '11px var(--space-5)', minHeight: 44, borderRadius: 'var(--radius-md)', background: 'var(--color-primary)', color: 'var(--color-text-inverse)', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
               {redeem ? 'แนบสมาชิก + แลกรางวัล' : 'แนบสมาชิกกับบิล'}
             </button>
           ) : (
-            <button onClick={onClose} style={{ flex: 1, padding: '11px 18px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)', fontSize: 14, cursor: 'pointer' }}>ปิด</button>
+            <button onClick={onClose} className="pressable" style={{ flex: 1, padding: '11px var(--space-5)', minHeight: 44, borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)', background: 'var(--color-surface)', color: 'var(--color-text)', fontSize: 14, cursor: 'pointer' }}>ปิด</button>
           )}
         </div>
       </div>

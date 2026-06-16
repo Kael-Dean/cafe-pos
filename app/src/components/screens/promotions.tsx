@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import Icon from '../icons';
 import { useToast, Tag, Select } from '../app-common';
+import { useFadeRise } from '@/lib/motion';
+import { SkeletonCard } from '@/components/ui/skeleton';
 import { useCurrentUser, isAdmin } from '@/hooks/use-current-user';
 import {
   usePromotions, useCreatePromotion, useUpdatePromotion, useDeletePromotion,
@@ -165,7 +167,7 @@ function PromoCard({ p, products, categories, onToggle, onEdit, onDelete, admin 
           <button onClick={() => onToggle(p)} style={{ padding: '6px 12px', borderRadius: 7, border: '1px solid var(--color-border)', background: 'var(--color-surface-2)', fontSize: 12, fontWeight: 500, cursor: 'pointer' }}>
             {p.is_active ? 'ปิด' : 'เปิด'}
           </button>
-          <button onClick={() => onDelete(p.id)} style={{ padding: '6px 8px', borderRadius: 7, border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-danger)', cursor: 'pointer' }}>
+          <button onClick={() => onDelete(p.id)} aria-label="ลบโปรโมชั่น" title="ลบ" style={{ minWidth: 24, minHeight: 24, display: 'grid', placeItems: 'center', padding: '6px 8px', borderRadius: 7, border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-danger)', cursor: 'pointer' }}>
             <Icon name="trash" size={13} />
           </button>
         </div>
@@ -178,6 +180,7 @@ export default function PromotionsScreen() {
   const toast = useToast();
   const { data: me } = useCurrentUser();
   const admin = isAdmin(me?.role);
+  const screenRef = useFadeRise();
 
   const [mainTab, setMainTab] = useState<'promos' | 'loyalty'>('promos');
   const [subTab, setSubTab] = useState<'list' | 'calculator'>('list');
@@ -265,7 +268,7 @@ export default function PromotionsScreen() {
   const scopeful = form.type !== 'COMBO_BUNDLE';
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto', padding: 32 }}>
+    <div ref={screenRef} style={{ height: '100%', overflowY: 'auto', padding: 32 }}>
       {/* Top-level section tabs */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
         {([['promos', 'โปรโมชั่น / คูปอง'], ['loyalty', 'สมาชิก / สะสมแต้ม']] as const).map(([v, l]) => (
@@ -274,7 +277,7 @@ export default function PromotionsScreen() {
               padding: '9px 18px', borderRadius: 999, fontSize: 14, fontWeight: 600, cursor: 'pointer',
               border: `1px solid ${mainTab === v ? 'var(--color-primary)' : 'var(--color-border)'}`,
               background: mainTab === v ? 'var(--color-primary)' : 'var(--color-surface)',
-              color: mainTab === v ? 'white' : 'var(--color-text-secondary)',
+              color: mainTab === v ? 'var(--color-text-inverse)' : 'var(--color-text-secondary)',
             }}>{l}</button>
         ))}
       </div>
@@ -289,7 +292,7 @@ export default function PromotionsScreen() {
         </div>
         {admin && subTab === 'list' && (
           <button onClick={openCreate}
-            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '10px 20px', borderRadius: 8, background: 'var(--color-accent)', color: 'var(--color-primary-700)', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
+            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '10px 20px', borderRadius: 8, background: 'var(--color-accent)', color: 'var(--color-on-accent)', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
             <Icon name="plus" size={15} /> สร้างโปรโมชั่น
           </button>
         )}
@@ -435,7 +438,7 @@ export default function PromotionsScreen() {
           </div>
           <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
             <button onClick={handleSubmit} disabled={saving}
-              style={{ padding: '10px 22px', borderRadius: 8, background: 'var(--color-accent)', color: 'var(--color-primary-700)', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
+              style={{ padding: '10px 22px', borderRadius: 8, background: 'var(--color-accent)', color: 'var(--color-on-accent)', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
               {saving ? 'กำลังบันทึก...' : 'บันทึก'}
             </button>
             <button onClick={closeForm} style={{ padding: '10px 22px', borderRadius: 8, background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', fontSize: 14, cursor: 'pointer' }}>ยกเลิก</button>
@@ -455,7 +458,12 @@ export default function PromotionsScreen() {
 
       {/* Promo cards */}
       {isLoading ? (
-        <div style={{ color: 'var(--color-text-secondary)', padding: 20 }}>กำลังโหลด...</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 14 }} aria-busy="true">
+          <span className="sr-only">กำลังโหลดโปรโมชั่น</span>
+          {Array.from({ length: 4 }).map((_, i) => (
+            <SkeletonCard key={i} lines={3} style={{ borderRadius: 14, padding: 20 }} />
+          ))}
+        </div>
       ) : list.length === 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', padding: 60, color: 'var(--color-text-muted)' }}>
           <Icon name="tag" size={40} color="var(--color-border)" />

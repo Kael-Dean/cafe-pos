@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Icon from '../icons';
 import { useToast, baht, Select } from '../app-common';
+import { SkeletonCard } from '@/components/ui/skeleton';
 import { useCurrentUser } from '@/hooks/use-current-user';
 import { useCategories } from '@/hooks/use-products';
 import { useProductsAdmin } from '@/hooks/use-products';
@@ -171,7 +172,15 @@ export default function LoyaltyConfig() {
     }
   };
 
-  if (isLoading) return <div style={{ color: 'var(--color-text-secondary)', padding: 20 }}>กำลังโหลด...</div>;
+  if (isLoading) return (
+    <div style={{ display: 'grid', gap: 18, maxWidth: 760 }} aria-busy="true">
+      <span className="sr-only">กำลังโหลดโปรแกรมสะสมแต้ม</span>
+      <SkeletonCard lines={1} style={{ borderRadius: 12, padding: 18 }} />
+      <SkeletonCard lines={2} style={{ borderRadius: 12, padding: 18 }} />
+      <SkeletonCard lines={3} style={{ borderRadius: 12, padding: 18 }} />
+      <SkeletonCard lines={2} style={{ borderRadius: 12, padding: 18 }} />
+    </div>
+  );
 
   const dis = !canEdit;
 
@@ -281,7 +290,7 @@ export default function LoyaltyConfig() {
       {canEdit && (
         <div>
           <button onClick={handleSave} disabled={saveProgram.isPending}
-            style={{ padding: '11px 26px', borderRadius: 8, background: 'var(--color-accent)', color: 'var(--color-primary-700)', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
+            style={{ padding: '11px 26px', borderRadius: 8, background: 'var(--color-accent)', color: 'var(--color-on-accent)', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
             {saveProgram.isPending ? 'กำลังบันทึก...' : 'บันทึกโปรแกรมสะสมแต้ม'}
           </button>
         </div>

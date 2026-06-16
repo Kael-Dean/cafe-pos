@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { api } from '@/lib/api-client';
 
 // ── Enums (from api-handoff "Enums & Constants") ──────────────────────────────
@@ -205,6 +205,22 @@ export function useRegisterMember() {
   });
 }
 
+/** Normalise a member name for duplicate comparison: trim, collapse inner whitespace, lowercase. */
+const normalizeMemberName = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase();
+
+/**
+ * Returns true when a member with this exact name already exists. The backend only enforces a
+ * unique phone, so duplicate-name registration is blocked on the client. The members endpoint does a
+ * substring match, so we re-check for an exact (normalised) match among the returned rows.
+ */
+export async function isMemberNameTaken(name: string): Promise<boolean> {
+  const target = normalizeMemberName(name);
+  if (!target) return false;
+  const params = new URLSearchParams({ name: name.trim(), page: '1', limit: '50' });
+  const page = await api.get<MembersPage>(`/api/v1/membership/members?${params}`);
+  return page.items.some((m) => normalizeMemberName(m.customer_name) === target);
+}
+
 // ── Member management (MANAGER / OWNER) ──────────────────────────────────────────
 export interface MembersQuery {
   name?: string;
@@ -225,6 +241,9 @@ export function useMembers(query: MembersQuery, enabled = true) {
       return api.get<MembersPage>(`/api/v1/membership/members?${params}`);
     },
     enabled,
+    // Keep the previous results visible while re-fetching for a new search term
+    // so typing each letter doesn't flash the skeleton (and resize the modal).
+    placeholderData: keepPreviousData,
   });
 }
 
