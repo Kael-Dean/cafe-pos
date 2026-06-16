@@ -21,6 +21,9 @@ from app.schemas.membership import (
     AdjustPointsRequest,
     LookupResponse,
     LookupRewardInfo,
+    MemberOrderItemRead,
+    MemberOrderRead,
+    MemberOrdersPage,
     MemberRead,
     MembersPage,
     PointTransactionRead,
@@ -371,7 +374,11 @@ async def _redeem_reward(
             db, program=program, order=order, product_id=reward_product_id
         )
 
-    order.discount = min(order.discount + discount, order.subtotal)
+    # Cap cumulative discount at the subtotal; the redemption only applies the
+    # portion that fits, so report the actually-applied amount (not the raw reward).
+    new_discount = min(order.discount + discount, order.subtotal)
+    discount = new_discount - order.discount
+    order.discount = new_discount
     order.total = order.subtotal - order.discount + order.tax
     order.reward_redeemed = True
 
@@ -546,6 +553,70 @@ async def get_member(
         "phone": customer_phone,
         "recent_transactions": [PointTransactionRead.model_validate(tx) for tx in tx_rows],
     })
+
+
+async def get_member_orders(
+    db: AsyncSession,
+    *,
+    store_id: str,
+    account_id: str,
+    page: int = 1,
+    limit: int = 20,
+) -> MemberOrdersPage:
+    from app.models.orders import Order, OrderItem
+
+    account = (await db.execute(
+        select(MembershipAccount).where(
+            MembershipAccount.id == account_id,
+            MembershipAccount.store_id == store_id,
+        )
+    )).scalar_one_or_none()
+    if not account:
+        raise NotFound("Member not found")
+
+    offset = (max(page, 1) - 1) * limit
+
+    agg = (await db.execute(
+        select(
+            func.count(Order.id),
+            func.coalesce(func.sum(Order.total), Decimal("0")),
+            func.coalesce(func.sum(Order.discount), Decimal("0")),
+        ).where(Order.member_id == account_id, Order.store_id == store_id)
+    )).one()
+    total_count, total_spent, total_discount = agg
+
+    orders = list((await db.execute(
+        select(Order)
+        .where(Order.member_id == account_id, Order.store_id == store_id)
+        .order_by(Order.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )).scalars())
+
+    items_by_order: dict[str, list] = {o.id: [] for o in orders}
+    if orders:
+        item_rows = list((await db.execute(
+            select(OrderItem).where(OrderItem.order_id.in_([o.id for o in orders]))
+        )).scalars())
+        for item in item_rows:
+            items_by_order[item.order_id].append(item)
+
+    order_reads = [
+        MemberOrderRead.model_validate({
+            **o.__dict__,
+            "items": [MemberOrderItemRead.model_validate(i) for i in items_by_order[o.id]],
+        })
+        for o in orders
+    ]
+
+    return MemberOrdersPage(
+        items=order_reads,
+        total=total_count,
+        total_spent=Decimal(str(total_spent)),
+        total_discount=Decimal(str(total_discount)),
+        page=page,
+        limit=limit,
+    )
 
 
 async def adjust_points(

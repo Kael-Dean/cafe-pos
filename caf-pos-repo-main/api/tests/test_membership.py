@@ -1,19 +1,32 @@
 """Tests for the membership module."""
-import pytest
+from datetime import date as _date
 from decimal import Decimal
+from unittest.mock import patch
+
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import Conflict
-from app.enums import EarnMode, MembershipTier, PointTxType, RewardScope, RewardType
+from app.core.errors import Conflict, NotFound, Unprocessable
+from app.enums import (
+    Channel,
+    EarnMode,
+    MembershipTier,
+    OrderStatus,
+    PointTxType,
+    RewardScope,
+    RewardType,
+)
 from app.models.customers import Customer
 from app.models.membership import MembershipAccount, MembershipProgram, PointTransaction
-from app.services import membership as svc
+from app.models.orders import Order as OrderModel
+from app.models.orders import OrderItem
 from app.schemas.membership import (
-    AdjustPointsRequest, LookupRequest, RegisterMemberRequest,
-    SetRewardProductsRequest, UpsertProgramRequest,
+    AdjustPointsRequest,
+    RegisterMemberRequest,
+    UpsertProgramRequest,
 )
-from tests.factories import make_category, make_product, make_user
-
+from app.services import membership as svc
+from tests.factories import make_category, make_product
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -214,16 +227,16 @@ async def test_register_conflicts_if_already_member(db: AsyncSession, store_a, u
 # These tests call svc._earn_points directly to unit-test earning logic without
 # going through the HTTP layer.
 
-from datetime import date as _date
-from unittest.mock import patch
-
-from app.models.orders import Order as OrderModel
-from app.enums import Channel, OrderStatus
-
 
 async def _make_bare_order(db, *, store_id, user_id, subtotal=Decimal("150")) -> OrderModel:
     """Insert a minimal order row for use in earn/redeem tests."""
+    import secrets
+
     from app.db.types import new_cuid
+    from app.services.orders import make_receipt_no
+
+    bdate = _date.today()
+    daily_number = int(secrets.token_hex(3), 16) + 10000
     order = OrderModel(
         id=new_cuid(),
         store_id=store_id,
@@ -233,6 +246,9 @@ async def _make_bare_order(db, *, store_id, user_id, subtotal=Decimal("150")) ->
         subtotal=subtotal,
         total=subtotal,
         created_by_id=user_id,
+        business_date=bdate,
+        daily_number=daily_number,
+        receipt_no=make_receipt_no(bdate, daily_number),
     )
     db.add(order)
     await db.flush()
@@ -382,9 +398,6 @@ async def test_earn_records_point_transaction(db: AsyncSession, store_a, user_a)
 
 
 # ── reward redemption ─────────────────────────────────────────────────────────
-
-from app.core.errors import Unprocessable
-from app.models.orders import OrderItem
 
 
 async def _attach_order_item(db, *, order_id, product_id, product_name, unit_price, quantity=1):
@@ -547,11 +560,17 @@ async def test_redeem_fails_with_insufficient_points(db: AsyncSession, store_a, 
 async def test_reverse_points_restores_earned_points_on_void(db: AsyncSession, store_a, user_a):
     from app.db.types import new_cuid
 
-    program = await make_program(db, store_id=store_a.id, earn_mode=EarnMode.PER_RECEIPT)
+    await make_program(db, store_id=store_a.id, earn_mode=EarnMode.PER_RECEIPT)
     _, account = await make_member(db, store_id=store_a.id, points_balance=5, lifetime_points_earned=5)
 
     # Simulate an order that already earned 3 points
     async with db.begin():
+        import secrets as _s1
+
+        from app.services.orders import make_receipt_no as _mrn1
+
+        _bd1 = _date.today()
+        _dn1 = int(_s1.token_hex(3), 16) + 10000
         order = OrderModel(
             store_id=store_a.id,
             status=OrderStatus.PAID,
@@ -563,6 +582,9 @@ async def test_reverse_points_restores_earned_points_on_void(db: AsyncSession, s
             member_id=account.id,
             points_earned=3,
             reward_redeemed=False,
+            business_date=_bd1,
+            daily_number=_dn1,
+            receipt_no=_mrn1(_bd1, _dn1),
         )
         db.add(order)
 
@@ -578,10 +600,16 @@ async def test_reverse_points_restores_earned_points_on_void(db: AsyncSession, s
 async def test_reverse_points_restores_redeemed_points_on_void(db: AsyncSession, store_a, user_a):
     from app.db.types import new_cuid
 
-    program = await make_program(db, store_id=store_a.id, points_to_redeem=10)
+    await make_program(db, store_id=store_a.id, points_to_redeem=10)
     _, account = await make_member(db, store_id=store_a.id, points_balance=0)
 
     async with db.begin():
+        import secrets as _s2
+
+        from app.services.orders import make_receipt_no as _mrn2
+
+        _bd2 = _date.today()
+        _dn2 = int(_s2.token_hex(3), 16) + 10000
         order = OrderModel(
             store_id=store_a.id,
             status=OrderStatus.PAID,
@@ -594,6 +622,9 @@ async def test_reverse_points_restores_redeemed_points_on_void(db: AsyncSession,
             member_id=account.id,
             points_earned=0,
             reward_redeemed=True,
+            business_date=_bd2,
+            daily_number=_dn2,
+            receipt_no=_mrn2(_bd2, _dn2),
         )
         db.add(order)
 
@@ -609,6 +640,12 @@ async def test_reverse_points_noop_when_no_member(db: AsyncSession, store_a, use
     from app.db.types import new_cuid
 
     async with db.begin():
+        import secrets as _secrets
+
+        from app.services.orders import make_receipt_no as _mrn
+
+        _bdate = _date.today()
+        _dn = int(_secrets.token_hex(3), 16) + 10000
         order = OrderModel(
             store_id=store_a.id,
             status=OrderStatus.PAID,
@@ -620,6 +657,9 @@ async def test_reverse_points_noop_when_no_member(db: AsyncSession, store_a, use
             member_id=None,
             points_earned=None,
             reward_redeemed=False,
+            business_date=_bdate,
+            daily_number=_dn,
+            receipt_no=_mrn(_bdate, _dn),
         )
         db.add(order)
 
@@ -711,3 +751,116 @@ async def test_list_members_does_not_leak_across_stores(db: AsyncSession, store_
     result = await svc.list_members(db, store_id=store_a.id)
     assert result.total == 1
     assert result.items[0].customer_name == "Store-A Member"
+
+
+# ── member order history ───────────────────────────────────────────────────────
+
+
+async def _make_member_order(
+    db: AsyncSession,
+    *,
+    store_id: str,
+    user_id: str,
+    account_id: str,
+    total: Decimal = Decimal("150.00"),
+    discount: Decimal = Decimal("0.00"),
+) -> OrderModel:
+    import secrets as _smmo
+
+    from app.db.types import new_cuid
+    from app.services.orders import make_receipt_no as _mrno
+
+    _bdmo = _date.today()
+    _dnmo = int(_smmo.token_hex(3), 16) + 10000
+    order = OrderModel(
+        store_id=store_id,
+        status=OrderStatus.PAID,
+        channel=Channel.DINE_IN,
+        idempotency_key=new_cuid(),
+        subtotal=total + discount,
+        discount=discount,
+        total=total,
+        created_by_id=user_id,
+        member_id=account_id,
+        business_date=_bdmo,
+        daily_number=_dnmo,
+        receipt_no=_mrno(_bdmo, _dnmo),
+    )
+    db.add(order)
+    await db.commit()
+    return order
+
+
+@pytest.mark.asyncio
+async def test_get_member_orders_returns_empty_when_no_orders(db: AsyncSession, store_a):
+    _, account = await make_member(db, store_id=store_a.id)
+    result = await svc.get_member_orders(db, store_id=store_a.id, account_id=account.id)
+    assert result.items == []
+    assert result.total == 0
+    assert result.total_spent == Decimal("0")
+    assert result.total_discount == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_get_member_orders_returns_orders_with_items(db: AsyncSession, store_a, user_a):
+    _, account = await make_member(db, store_id=store_a.id)
+    order = await _make_member_order(
+        db, store_id=store_a.id, user_id=user_a.id, account_id=account.id,
+        total=Decimal("170.00"),
+    )
+    db.add(OrderItem(
+        order_id=order.id,
+        product_name="Latte",
+        quantity=2,
+        unit_price=Decimal("85.00"),
+        line_total=Decimal("170.00"),
+    ))
+    await db.commit()
+
+    result = await svc.get_member_orders(db, store_id=store_a.id, account_id=account.id)
+    assert result.total == 1
+    order_read = result.items[0]
+    assert order_read.total == Decimal("170.00")
+    assert len(order_read.items) == 1
+    assert order_read.items[0].product_name == "Latte"
+    assert order_read.items[0].quantity == 2
+
+
+@pytest.mark.asyncio
+async def test_get_member_orders_calculates_spend_summary(db: AsyncSession, store_a, user_a):
+    _, account = await make_member(db, store_id=store_a.id)
+    await _make_member_order(
+        db, store_id=store_a.id, user_id=user_a.id, account_id=account.id,
+        total=Decimal("100.00"), discount=Decimal("50.00"),
+    )
+    await _make_member_order(
+        db, store_id=store_a.id, user_id=user_a.id, account_id=account.id,
+        total=Decimal("200.00"),
+    )
+
+    result = await svc.get_member_orders(db, store_id=store_a.id, account_id=account.id)
+    assert result.total == 2
+    assert result.total_spent == Decimal("300.00")
+    assert result.total_discount == Decimal("50.00")
+
+
+@pytest.mark.asyncio
+async def test_get_member_orders_paginates_correctly(db: AsyncSession, store_a, user_a):
+    _, account = await make_member(db, store_id=store_a.id)
+    for _ in range(3):
+        await _make_member_order(
+            db, store_id=store_a.id, user_id=user_a.id, account_id=account.id,
+        )
+
+    page1 = await svc.get_member_orders(db, store_id=store_a.id, account_id=account.id, page=1, limit=2)
+    assert page1.total == 3
+    assert len(page1.items) == 2
+
+    page2 = await svc.get_member_orders(db, store_id=store_a.id, account_id=account.id, page=2, limit=2)
+    assert len(page2.items) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_member_orders_raises_not_found_for_unknown_account(db: AsyncSession, store_a):
+    with pytest.raises(NotFound):
+        await svc.get_member_orders(db, store_id=store_a.id, account_id="nonexistent_id_xxx")
