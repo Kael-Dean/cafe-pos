@@ -156,7 +156,7 @@ function buildESCPOS(data) {
     line(data.storeName),
     cmd(GS,  0x21, 0x00),
     line('ใบเสร็จรับเงิน'),
-    line(data.copy ? 'สำเนา' : 'ต้นฉบับ'),
+    ...(data.copy ? [line('สำเนา')] : []),
     line(dash),
     cmd(ESC, 0x61, 0x00),
   ];
@@ -171,6 +171,7 @@ function buildESCPOS(data) {
   parts.push(line(`ออเดอร์: #${data.orderNumber}`));
   parts.push(line((data.issuedAt ? new Date(data.issuedAt) : new Date()).toLocaleString('th-TH')));
   if (data.memberName) parts.push(line(`ลูกค้า: ${data.memberName}`));
+  if (data.salesName) parts.push(line(`เซลล์: ${data.salesName}`));
   parts.push(line(dash));
 
   parts.push(line(leftRight('รายการ', 'จำนวนเงิน')));
@@ -187,6 +188,7 @@ function buildESCPOS(data) {
   parts.push(line(leftRight('รวมทั้งสิ้น (บาท)', fmt2(data.total))));
   parts.push(cmd(ESC, 0x45, 0x00));
   parts.push(line(`(${bahtText(data.total)})`));
+  parts.push(line('ราคารวมภาษีมูลค่าเพิ่ม 7% แล้ว (VAT included)'));
   parts.push(line(`ชำระ: ${data.paymentLabel}`));
 
   if (data.cashGiven != null) {
@@ -531,6 +533,7 @@ function buildReceiptLines(d) {
   L.push({ t: 'text', s: `ออเดอร์: #${d.orderNumber}`, a: 'left', size: N });
   L.push({ t: 'text', s: new Date().toLocaleString('th-TH'), a: 'left', size: N });
   if (d.memberName) L.push({ t: 'text', s: `ลูกค้า: ${d.memberName}`, a: 'left', size: N });
+  if (d.salesName) L.push({ t: 'text', s: `เซลล์: ${d.salesName}`, a: 'left', size: N });
   L.push({ t: 'hr' });
   L.push({ t: 'lr', l: 'รายการ', r: 'จำนวนเงิน', size: N });
   L.push({ t: 'hr' });
@@ -572,6 +575,63 @@ async function buildUsbReceipt(data) {
     raster,                    // logo + receipt body, centered consistently
     Buffer.from([LF, LF, LF]),
     cmd(ESC, 0x69),            // ESC i — full cut (AN581-C)
+  ]);
+}
+
+/* ── "Dumb bridge" path: render a neutral line-list the APP sends ─────
+   The app (lib/receipt-lines.ts) owns the receipt layout and ships a line-list
+   identical in shape to buildReceiptLines() above. These renderers are
+   layout-agnostic — they draw whatever ops they're given — so the printed slip
+   can change with an app-only deploy; the bridge never needs reinstalling for a
+   receipt-layout tweak again. Logo (top) and paper cut stay bridge primitives. */
+
+// Neutral line-list → ESC/POS text (LAN). `size` ≥ 32 px → double-height heading.
+function linesToEscpos(lines) {
+  const out = [];
+  for (const ln of lines) {
+    if (ln.t === 'hr') { out.push(line(dash)); continue; }
+    if (ln.t === 'sp') { out.push(line('')); continue; }
+    if (ln.t === 'lr') {
+      if (ln.bold) out.push(cmd(ESC, 0x45, 0x01));
+      out.push(line(leftRight(String(ln.l), String(ln.r))));
+      if (ln.bold) out.push(cmd(ESC, 0x45, 0x00));
+      continue;
+    }
+    // text
+    const big = Number(ln.size) >= 32;
+    out.push(cmd(ESC, 0x61, ln.a === 'center' ? 0x01 : 0x00));
+    if (big)     out.push(cmd(GS, 0x21, 0x10));   // double-height
+    if (ln.bold) out.push(cmd(ESC, 0x45, 0x01));
+    out.push(line(String(ln.s)));
+    if (ln.bold) out.push(cmd(ESC, 0x45, 0x00));
+    if (big)     out.push(cmd(GS, 0x21, 0x00));
+    out.push(cmd(ESC, 0x61, 0x00));               // reset to left
+  }
+  return Buffer.concat(out);
+}
+
+function buildEscposFromLines(lines) {
+  return Buffer.concat([
+    cmd(ESC, 0x40),               // init
+    cmd(GS,  0x4c, 0x00, 0x00),   // left margin = 0
+    cmd(ESC, 0x74, 0x15),         // TIS-620
+    cmd(ESC, 0x61, 0x01),         // center (for the logo)
+    logoCommand(),
+    cmd(LF),
+    linesToEscpos(lines),
+    Buffer.from([LF, LF, LF]),
+    cmd(GS, 0x56, 0x42, 0x03),    // partial cut
+  ]);
+}
+
+async function buildUsbReceiptFromLines(lines) {
+  const b64 = (await renderLinesToRasterB64(lines)).trim();
+  const raster = Buffer.from(b64, 'base64');
+  return Buffer.concat([
+    cmd(ESC, 0x40),
+    raster,
+    Buffer.from([LF, LF, LF]),
+    cmd(ESC, 0x69),               // ESC i — full cut (AN581-C)
   ]);
 }
 
@@ -665,18 +725,21 @@ const server = http.createServer(async (req, res) => {
         storePhone:   cfg.storePhone,
         ...body,
       };
+      // Prefer the app-supplied neutral line-list (layout owned by the app);
+      // fall back to the bridge's own builders for older app versions.
+      const lines = Array.isArray(body.lines) ? body.lines : null;
       if (cfg.mode === 'usb') {
         const usbName = await resolveUsbPrinter(cfg.printerName);
         if (!usbName) throw new Error('ไม่พบเครื่องพิมพ์ USB (AN581-C) — เสียบสาย USB และติดตั้งไดรเวอร์แล้วลองใหม่');
         if (usbName !== cfg.printerName) saveConfig({ printerName: usbName });
         await ensureWindowsPrinterOnline(usbName);          // clear any stuck "offline" flag first
-        const receipt = await buildUsbReceipt(data); // rendered as an image → perfect Thai + ESC i cut
+        const receipt = lines ? await buildUsbReceiptFromLines(lines) : await buildUsbReceipt(data); // rendered as an image → perfect Thai + ESC i cut
         await sendToWindowsPrinter(usbName, receipt);
-        console.log(`[print] ok (usb)  printer="${usbName}"  order=${body.orderNumber}  items=${body.items?.length ?? 0}`);
+        console.log(`[print] ok (usb)  printer="${usbName}"  order=${body.orderNumber}  items=${body.items?.length ?? 0}  src=${lines ? 'lines' : 'legacy'}`);
       } else {
-        const receipt = buildESCPOS(data);
+        const receipt = lines ? buildEscposFromLines(lines) : buildESCPOS(data);
         await sendToPrinter(cfg.ip, cfg.port, receipt);
-        console.log(`[print] ok (lan)  ip=${cfg.ip}  order=${body.orderNumber}  items=${body.items?.length ?? 0}`);
+        console.log(`[print] ok (lan)  ip=${cfg.ip}  order=${body.orderNumber}  items=${body.items?.length ?? 0}  src=${lines ? 'lines' : 'legacy'}`);
       }
       return json(res, 200, { ok: true });
     }
