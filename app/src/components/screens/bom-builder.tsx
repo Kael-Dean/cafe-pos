@@ -1323,6 +1323,13 @@ const ProductImageControl = ({ product }: { product: MenuItem }) => {
 
   const busy = uploadImage.isPending || deleteImage.isPending;
 
+  useEffect(() => {
+    if (!preview) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPreview(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [preview]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, flexShrink: 0 }}>
       <div
