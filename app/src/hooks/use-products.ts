@@ -19,7 +19,7 @@ interface ProductRead {
   description: string | null;
   price: string | number;  // Decimal serialised as string
   is_active: boolean;
-  product_type: 'MADE_TO_ORDER' | 'PRODUCED';
+  product_type: 'MADE_TO_ORDER' | 'PRODUCED' | 'COMPONENT';
   servings_per_batch: number;
   finished_goods_item_id: string | null;
   image_url: string | null;   // R2 public URL, or null when no photo uploaded
@@ -36,7 +36,7 @@ export interface MenuItem {
   color: string;        // generated from id
   tag: string;          // first 2 chars of name
   needsModifier: boolean; // set to true in POS when modifier groups exist
-  productType: 'MADE_TO_ORDER' | 'PRODUCED';
+  productType: 'MADE_TO_ORDER' | 'PRODUCED' | 'COMPONENT';
   servingsPerBatch: number;
   finishedGoodsItemId: string | null;
   imageUrl: string | null;  // product.image_url — card background when present
@@ -136,9 +136,9 @@ interface ProductCreatePayload {
   name: string;
   category_id?: string;
   description?: string;
-  price: number;
+  price?: number;   // omit for COMPONENT — server forces 0
   is_active?: boolean;
-  product_type?: 'MADE_TO_ORDER' | 'PRODUCED';
+  product_type?: 'MADE_TO_ORDER' | 'PRODUCED' | 'COMPONENT';
   servings_per_batch?: number;
 }
 
@@ -169,7 +169,7 @@ interface ProductUpdatePayload {
   price?: number;
   category_id?: string | null;
   name?: string;
-  product_type?: 'MADE_TO_ORDER' | 'PRODUCED';
+  product_type?: 'MADE_TO_ORDER' | 'PRODUCED' | 'COMPONENT';
   servings_per_batch?: number;
 }
 
@@ -211,6 +211,28 @@ export function useProductsAdmin() {
   return useQuery<ProductReadAdmin[]>({
     queryKey: ['products', 'admin'],
     queryFn: () => api.get<ProductReadAdmin[]>('/api/v1/products'),
+  });
+}
+
+// ── Recycle bin (soft-deleted products) ───────────────────────────────────────
+// "Delete" in this POS sets is_active=false; these list/restore those rows.
+// OWNER/MANAGER only (backend enforces; the screen is gated too).
+export function useDeletedProducts() {
+  return useQuery<ProductReadAdmin[]>({
+    queryKey: ['products', 'deleted'],
+    queryFn: () => api.get<ProductReadAdmin[]>('/api/v1/products/deleted'),
+  });
+}
+
+export function useRestoreProduct() {
+  const qc = useQueryClient();
+  return useMutation({
+    // Idempotent on the backend — restoring an already-active product is a 200.
+    mutationFn: (productId: string) =>
+      api.post<ProductReadAdmin>(`/api/v1/products/${productId}/restore`, {}),
+    // ['products'] prefix covers ['products','deleted'] (row leaves) and the
+    // active lists ['products','all'] / ['products','admin'] (item reappears).
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['products'] }),
   });
 }
 
