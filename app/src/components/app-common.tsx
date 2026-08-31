@@ -229,27 +229,36 @@ export const Sidebar = ({ current, onNavigate, onLogout, branchName = 'Sukhumvit
                 <div key={s.id} style={{display: 'flex', flexDirection: 'column', gap: 2}}>
                   <button
                     onClick={() => toggleSection(s.id)}
-                    className="sb-section-btn"
+                    className={`sb-section-btn${open ? ' open' : ''}${s.id === activeSectionId ? ' current' : ''}`}
                     aria-expanded={open}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 8,
                       width: '100%', marginTop: 4, padding: '9px 12px',
                       borderRadius: 8, border: 'none', cursor: 'pointer',
                       fontFamily: 'inherit', minHeight: 36,
+                      position: 'relative',
                     }}
                   >
+                    {/* color:currentColor → label + chevron both track the button's
+                        hover/open/current color shift (set in .sb-section-btn CSS). */}
                     <span className="sb-fade" style={{
                       flex: 1, textAlign: 'left', fontSize: 11, fontWeight: 700,
                       letterSpacing: '0.06em', textTransform: 'uppercase',
-                      color: 'var(--sb-text-muted)', whiteSpace: 'nowrap',
+                      color: 'currentColor', whiteSpace: 'nowrap',
                     }}>{sectionLabel(s.id)}</span>
                     <Icon name="chevronDown" size={14} style={{
-                      color: 'var(--sb-text-muted)', flexShrink: 0,
+                      color: 'currentColor', flexShrink: 0,
                       transform: open ? 'none' : 'rotate(-90deg)',
                       transition: 'transform var(--dur-slow) var(--ease-out)',
                     }} />
                   </button>
-                  {open && s.items.map(renderItem)}
+                  {open && (
+                    // Keyed by open-state so the reveal animation replays each time
+                    // the group is opened, not only on first mount.
+                    <div key={`${s.id}-items`} className="sb-section-items" style={{display: 'flex', flexDirection: 'column', gap: 2}}>
+                      {s.items.map(renderItem)}
+                    </div>
+                  )}
                 </div>
               );
             })}
