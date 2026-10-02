@@ -3,8 +3,10 @@
 import { useState, useEffect, FormEvent } from 'react';
 import { setTokens } from '@/lib/token-store';
 import { readAndClearLogoutReason } from '@/lib/auth';
+import { parseRetryAfter } from '@/lib/api-client';
 import { useFadeRise } from '@/lib/motion';
 import Icon from '../icons';
+import { InstallEntry } from '../pwa/install-app';
 
 interface Props { onLogin: () => void; }
 
@@ -35,6 +37,7 @@ export default function LoginScreen({ onLogin }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [expiredNotice, setExpiredNotice] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
 
   // First screen the client sees — a single calm fade-rise on the whole card is
   // a tasteful entrance here (one-time, not a repeated interaction). Honors
@@ -45,7 +48,15 @@ export default function LoginScreen({ onLogin }: Props) {
     if (readAndClearLogoutReason() === 'expired') setExpiredNotice(true);
   }, []);
 
-  const canSubmit = storeSlug.trim().length > 0 && pin.length >= 4;
+  // Rate-limit countdown, so a locked-out shift sees how long is left instead of
+  // hammering a button that cannot work yet.
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const id = setTimeout(() => setCooldown((s) => s - 1), 1000);
+    return () => clearTimeout(id);
+  }, [cooldown]);
+
+  const canSubmit = storeSlug.trim().length > 0 && pin.length >= 4 && cooldown === 0;
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -60,8 +71,18 @@ export default function LoginScreen({ onLogin }: Props) {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        const msg = body?.detail ?? 'เข้าสู่ระบบไม่สำเร็จ';
-        throw new Error(typeof msg === 'string' ? msg : 'รหัส PIN หรือ Store ID ไม่ถูกต้อง');
+        // This screen predates the shared client, so it parses the envelope
+        // itself: {"error": {"code", "message"}} first, FastAPI's bare "detail"
+        // second. Without the first branch every backend message renders as the
+        // generic fallback below.
+        const raw = body?.error?.message ?? body?.detail;
+        const msg = typeof raw === 'string' && raw ? raw : 'รหัส PIN หรือ Store ID ไม่ถูกต้อง';
+        if (res.status === 429) {
+          const secs = parseRetryAfter(res) ?? 60;
+          setCooldown(secs);
+          throw new Error(`พยายามเข้าสู่ระบบถี่เกินไป รออีก ${secs} วินาทีแล้วลองใหม่`);
+        }
+        throw new Error(msg);
       }
       const data: TokenPair = await res.json();
       setTokens({ access: data.access_token, refresh: data.refresh_token });
@@ -75,13 +96,20 @@ export default function LoginScreen({ onLogin }: Props) {
   };
 
   return (
-    <div style={{
-      height: '100dvh', width: '100vw',
+    <main style={{
+      // 100% (not 100vw): vw ignores a classic scrollbar and can force a sideways
+      // scroll. Side / bottom safe-area insets keep the form clear of a notch or the
+      // home indicator in the installed app; the top inset is handled by <body>.
+      height: 'var(--app-h, 100dvh)', width: '100%',
+      padding: '0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px)',
       background: 'var(--color-bg)',
-      display: 'grid', placeItems: 'center',
+      // Centred via the child's auto margins (not place-items) so that when the
+      // install steps open on a short phone the column scrolls from the top
+      // instead of being clipped above the fold.
+      display: 'grid', overflowY: 'auto',
     }}>
       <div ref={cardRef} style={{
-        width: '100%', maxWidth: 400, padding: '0 var(--space-6)',
+        width: '100%', maxWidth: 400, margin: 'auto', padding: 'var(--space-6)',
       }}>
         {/* Logo */}
         <div style={{ textAlign: 'center', marginBottom: 'var(--space-10)' }}>
@@ -93,7 +121,7 @@ export default function LoginScreen({ onLogin }: Props) {
           }}>
             <Icon name="pos" size={36} color="var(--color-text-inverse)" />
           </div>
-          <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--color-text)' }}>Kafé OS</div>
+          <h1 style={{ margin: 0, fontSize: 26, fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--color-text)' }}>Kafé OS</h1>
           <div style={{ fontSize: 'var(--fs-14)', color: 'var(--color-text-secondary)', marginTop: 'var(--space-1)' }}>
             กรุณาเข้าสู่ระบบเพื่อดำเนินการต่อ
           </div>
@@ -108,11 +136,13 @@ export default function LoginScreen({ onLogin }: Props) {
               background: 'var(--color-warning-50)',
               border: '1px solid var(--color-warning)',
               borderRadius: 'var(--radius-md)', fontSize: 'var(--fs-14)',
-              color: 'var(--color-warning)', fontWeight: 500,
+              // --color-warning-fg, not --color-warning: the honey tone is only
+              // ~1.8:1 on its own 50 tint (see the token note in globals.css).
+              color: 'var(--color-warning-fg)', fontWeight: 500,
               display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
             }}
           >
-            <Icon name="warning" size={16} color="var(--color-warning)" />
+            <Icon name="warning" size={16} color="var(--color-warning-fg)" />
             <span>เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่</span>
           </div>
         )}
@@ -157,7 +187,8 @@ export default function LoginScreen({ onLogin }: Props) {
                 background: 'var(--color-danger-50)',
                 border: '1px solid var(--color-danger)',
                 borderRadius: 'var(--radius-md)', fontSize: 'var(--fs-14)',
-                color: 'var(--color-danger)', fontWeight: 500,
+                // --color-danger-fg: plain --color-danger is ~4.1:1 on danger-50 (below AA).
+                color: 'var(--color-danger-fg)', fontWeight: 500,
               }}
             >
               {error}
@@ -189,10 +220,14 @@ export default function LoginScreen({ onLogin }: Props) {
                 <span className="spinner" aria-hidden style={{ width: 16, height: 16 }} />
                 กำลังเข้าสู่ระบบ...
               </>
-            ) : 'เข้าสู่ระบบ'}
+            ) : cooldown > 0 ? `รออีก ${cooldown} วินาที` : 'เข้าสู่ระบบ'}
           </button>
         </form>
+
+        {/* A new tablet lands here first — offer install before anyone logs in.
+            Hidden once the app is already installed. */}
+        <InstallEntry />
       </div>
-    </div>
+    </main>
   );
 }

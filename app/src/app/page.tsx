@@ -4,7 +4,8 @@ import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
 import dynamic from 'next/dynamic';
 import { useQueryClient } from '@tanstack/react-query';
-import { ToastProvider, Sidebar, BottomTabBar } from '@/components/app-common';
+import { ToastProvider, Sidebar } from '@/components/app-common';
+import { MobileNav } from '@/components/mobile-nav';
 import { getToken, clearToken, subscribeAuth } from '@/lib/token-store';
 import { canLeave } from '@/lib/nav-guard';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -12,6 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 // belong in the first chunk. Every other screen is code-split below.
 import LoginScreen from '@/components/screens/login';
 import POSTerminal from '@/components/screens/pos';
+import type { ActiveTableSession } from '@/components/screens/floor';
 
 // Brief fallback while a screen's JS chunk downloads. Screens carry their own
 // data-loading skeletons; this only covers the chunk fetch itself.
@@ -29,6 +31,11 @@ function ScreenLoading() {
 // gates its render on `mounted` (so nothing renders server-side anyway).
 const lazyScreen = (loader: () => Promise<{ default: ComponentType }>) =>
   dynamic(loader, { ssr: false, loading: ScreenLoading });
+
+// Floor takes props, so it is declared with `dynamic` directly — `lazyScreen`
+// erases prop types to the no-prop ComponentType the registry below expects.
+const Floor = dynamic(() => import('@/components/screens/floor'), { ssr: false, loading: ScreenLoading });
+const TableSetup = lazyScreen(() => import('@/components/screens/table-setup'));
 
 const KDS = lazyScreen(() => import('@/components/screens/kds'));
 const Dashboard = lazyScreen(() => import('@/components/screens/dashboard'));
@@ -55,6 +62,7 @@ const ReceiptCopies = lazyScreen(() => import('@/components/screens/receipt-copi
 
 type Screen =
   | 'pos' | 'kds' | 'dashboard' | 'bom' | 'bakery' | 'inventory'
+  | 'floor' | 'table-setup'
   | 'pre-orders' | 'shopping-list' | 'stock-take'
   | 'cash' | 'receipt-copies' | 'promotions' | 'members' | 'sales' | 'protocols' | 'hr' | 'shifts'
   | 'hardware' | 'customers' | 'reports' | 'catalog' | 'recycle-bin' | 'settings';
@@ -64,6 +72,9 @@ export default function POS() {
   const [mounted, setMounted] = useState(false);
   const [screen, setScreen] = useState<Screen>('pos');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // The board-game tab: while set, POS puts every order it creates on this table's
+  // session instead of taking payment at the counter.
+  const [tableSession, setTableSession] = useState<ActiveTableSession | null>(null);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -99,10 +110,19 @@ export default function POS() {
     clearToken();
     queryClient.clear();
     setIsLoggedIn(false);
+    setTableSession(null);
+  };
+
+  // "สั่งอาหาร" from a table hands the tab to POS and switches screens.
+  const startTableOrder = (s: ActiveTableSession) => {
+    setTableSession(s);
+    void navigate('pos');
   };
 
   const screens: Record<Screen, React.ReactNode> = {
-    pos:        <POSTerminal />,
+    pos:        <POSTerminal session={tableSession} onClearSession={() => setTableSession(null)} />,
+    floor:      <Floor onOrderForSession={startTableOrder} onNavigate={(s) => { void navigate(s as Screen); }} />,
+    'table-setup': <TableSetup />,
     kds:        <KDS />,
     dashboard:  <Dashboard />,
     bom:        <BOMBuilder />,
@@ -129,7 +149,10 @@ export default function POS() {
 
   return (
     <ToastProvider>
-      <div style={{ display: 'flex', height: '100dvh', width: '100vw', overflow: 'hidden' }}>
+      {/* .app-shell (globals.css): flex row, height --app-h = 100dvh minus the system
+          bar / top safe-area inset, side safe-area insets as padding. */}
+      <div className="app-shell">
+        {/* ≥ 768px. Below that it is display:none and <MobileNav> is the nav. */}
         <Sidebar current={screen} onNavigate={(s) => { void navigate(s as Screen); }} onLogout={() => { void handleLogout(); }} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(v => !v)} />
         <main className="app-main" style={{ flex: 1, minWidth: 0, position: 'relative', overflow: 'auto' }}>
           {/* key={screen} remounts on navigation so the screen fade (.screen-enter,
@@ -140,6 +163,11 @@ export default function POS() {
           <ScreenFrame key={screen}>{screens[screen]}</ScreenFrame>
         </main>
       </div>
+      {/* Phones (< 768px): bottom tab bar + menu sheet. Renders nothing on wider
+          screens. Goes through the same navigate() / handleLogout() as the sidebar,
+          so the unsaved-changes guard applies. .app-main reserves its height
+          (--tabbar-h) so no screen content sits behind it. */}
+      <MobileNav current={screen} onNavigate={(s) => { void navigate(s as Screen); }} onLogout={() => { void handleLogout(); }} />
     </ToastProvider>
   );
 }

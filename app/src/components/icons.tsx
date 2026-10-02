@@ -78,13 +78,18 @@ export default function Icon({ name, size = 20, color = 'currentColor', strokeWi
     gift: <><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></>,
     printer: <><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></>,
     wifi: <><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1"/></>,
-    bluetooth: <path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/>,
+    wifiOff: <><path d="M2 2l20 20"/><path d="M8.5 16.4a5 5 0 0 1 7 0"/><path d="M5 12.9a10 10 0 0 1 5.2-2.7"/><path d="M19 12.9a10 10 0 0 0-2-1.5"/><path d="M2 8.8a15 15 0 0 1 4.2-2.6"/><path d="M22 8.8a15 15 0 0 0-11.3-3.7"/><path d="M12 20h.01"/></>,
+    bluetooth:<path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/>,
     usb: <><path d="M12 2v12"/><path d="M9 8l3-6 3 6"/><rect x="9" y="14" width="6" height="6" rx="1"/><path d="M7 20h10"/></>,
     pencil: <><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></>,
     download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></>,
     crop: <><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></>,
     layers: <><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></>,
     list: <><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></>,
+    pot: <><path d="M5 11h14v6a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3v-6z"/><path d="M5 13.5H3M19 13.5h2"/><path d="M9 3c-1 1.5 1 2.5 0 4.5M12 3c-1 1.5 1 2.5 0 4.5M15 3c-1 1.5 1 2.5 0 4.5"/></>,
+    menu: <path d="M4 7h16M4 12h16M4 17h16"/>,
+    logout: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></>,
+    dice: <><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 8h.01M16 8h.01M12 12h.01M8 16h.01M16 16h.01"/></>,
   };
   return <svg {...props}>{paths[name] || null}</svg>;
 }

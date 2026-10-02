@@ -2,6 +2,7 @@
 
 import Icon from '../icons';
 import { Tag } from '../app-common';
+import { InstallCard } from '../pwa/install-app';
 import { useFadeRise } from '@/lib/motion';
 import { useI18n, type Lang } from '@/lib/i18n';
 import { useTheme, type Theme } from '@/lib/theme';
@@ -29,15 +30,18 @@ export default function Settings() {
   ];
 
   return (
-    <div ref={rootRef} className="scroll" style={{ height: '100%', overflow: 'auto', padding: 'var(--space-6)', background: 'var(--color-bg)' }}>
+    // Phone layout comes from the responsive toolkit classes (globals.css): .screen-pad
+    // (page gutter), .page-title, .pad-phone (card padding) and .stack-phone (the two
+    // option buttons stack instead of squeezing side by side).
+    <div ref={rootRef} className="scroll screen-pad" style={{ height: '100%', overflow: 'auto', background: 'var(--color-bg)' }}>
       {/* Header */}
       <div style={{ marginBottom: 'var(--space-5)' }}>
-        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, letterSpacing: '-0.01em' }}>{t.settings.title}</h1>
+        <h1 className="page-title">{t.settings.title}</h1>
         <div style={{ fontSize: 14, color: 'var(--color-text-secondary)', marginTop: 'var(--space-1)' }}>{t.settings.subtitle}</div>
       </div>
 
       {/* Language — the one functional section */}
-      <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 12, padding: 24, marginBottom: 16, maxWidth: 560 }}>
+      <div className="pad-phone" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 12, padding: 24, marginBottom: 16, maxWidth: 560 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
           <div style={{ width: 40, height: 40, borderRadius: 10, background: 'var(--color-accent-50)', color: 'var(--color-primary)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
             <Icon name="settings" size={20} />
@@ -48,7 +52,7 @@ export default function Settings() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+        <div className="stack-phone" style={{ display: 'flex', gap: 10, marginTop: 16 }}>
           {langOptions.map((opt) => {
             const active = lang === opt.value;
             return (
@@ -85,7 +89,7 @@ export default function Settings() {
       </div>
 
       {/* Appearance / theme — mirrors the Language card pattern */}
-      <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 12, padding: 24, marginBottom: 16, maxWidth: 560 }}>
+      <div className="pad-phone" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 12, padding: 24, marginBottom: 16, maxWidth: 560 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
           <div style={{ width: 40, height: 40, borderRadius: 10, background: 'var(--color-accent-50)', color: 'var(--color-primary)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
             <Icon name={theme === 'dark' ? 'moon' : 'sun'} size={20} />
@@ -96,7 +100,7 @@ export default function Settings() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+        <div className="stack-phone" style={{ display: 'flex', gap: 10, marginTop: 16 }}>
           {themeOptions.map((opt) => {
             const active = theme === opt.value;
             return (
@@ -140,6 +144,9 @@ export default function Settings() {
           })}
         </div>
       </div>
+
+      {/* Install as an app (PWA) — action depends on what this browser supports */}
+      <InstallCard />
 
       {/* Everything else — informational, not yet built */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16, maxWidth: 1140 }}>

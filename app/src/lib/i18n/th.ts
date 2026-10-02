@@ -50,6 +50,8 @@ export const th = {
     'stock-take': 'ตรวจนับสต็อก',
     cash: 'เงินสด / กระทบยอด',
     'receipt-copies': 'สำเนาใบเสร็จ',
+    floor: 'ผังโต๊ะ',
+    'table-setup': 'ตั้งค่าโต๊ะ & ค่าเวลา',
     promotions: 'โปรโมชัน / สะสมแต้ม',
     members: 'สมาชิก',
     sales: 'เซลส์',
@@ -59,7 +61,7 @@ export const th = {
     hardware: 'อุปกรณ์ฮาร์ดแวร์',
     customers: 'ลูกค้า (CRM)',
     reports: 'รายงาน',
-    catalog: 'แคตตาล็อกสินค้า',
+    catalog: 'หมวดหมู่สินค้า',
     'recycle-bin': 'ถังขยะ',
     settings: 'ตั้งค่า',
   },
@@ -67,6 +69,7 @@ export const th = {
   // ── Sidebar section headers (desktop nav, grouped by working mode) ─────────
   navSection: {
     'sec-service': 'หน้าร้าน',
+    'sec-boardgame': 'โต๊ะ & บอร์ดเกม',
     'sec-kitchen': 'ครัว & สต็อก',
     'sec-crm': 'ลูกค้า & การตลาด',
     'sec-manage': 'จัดการ & รายงาน',
@@ -79,10 +82,11 @@ export const th = {
     kds: 'KDS',
     inventory: 'คลัง',
     dashboard: 'แดชบอร์ด',
-    more: 'เพิ่มเติม',
-    moreTitle: 'เมนูเพิ่มเติม',
-    moreOptions: 'เมนูเพิ่มเติม',
-    closeMore: 'ปิดเมนูเพิ่มเติม',
+    protocols: 'SOP',
+    // The 5th tab: opens the sheet that lists every screen the role can see.
+    menu: 'เมนู',
+    menuTitle: 'เมนูทั้งหมด',
+    closeMenu: 'ปิดเมนู',
   },
 
   // ── Roles ─────────────────────────────────────────────────────────────────
@@ -98,6 +102,7 @@ export const th = {
     expand: 'ขยายเมนู',
     collapse: 'ย่อเมนู',
     logout: 'ออกจากระบบ',
+    navLabel: 'เมนูหลัก',
   },
 
   // ── Settings screen ───────────────────────────────────────────────────────
@@ -123,6 +128,121 @@ export const th = {
     integrationDesc: 'LINE OA, ระบบสมาชิก, GrabFood / LINE MAN, Shopee Food, e-Tax invoice',
     backupTitle: 'Backup & Sync',
     backupDesc: 'สำรองข้อมูลรายวันอัตโนมัติ, ซิงก์หลายสาขา, โหมดออฟไลน์',
+  },
+
+  // ── PWA: install, offline banner, app-update prompt ───────────────────────
+  // Quoted menu names follow the Thai UI of each browser/OS so staff can match
+  // them on screen.
+  pwa: {
+    installTitle: 'ติดตั้ง Kafé OS',
+    installDesc: 'เพิ่ม Kafé OS ลงเครื่องนี้ แล้วเปิดจากไอคอนได้เต็มจอ ไม่ต้องพิมพ์ที่อยู่เว็บทุกครั้ง',
+    installButton: 'ติดตั้งแอป',
+    installWaiting: 'รอยืนยันในหน้าต่างของเบราว์เซอร์...',
+    installDismissed: 'ยังไม่ได้ติดตั้ง ดูวิธีติดตั้งแบบมีภาพได้ทุกเมื่อ',
+    installedTitle: 'ติดตั้งบนเครื่องนี้แล้ว',
+    installedDesc: 'เปิด Kafé OS จากไอคอนบนหน้าจอหลักหรือแถบงานได้เลย',
+    loginEntry: 'ติดตั้งแอปลงเครื่องนี้',
+    unsupportedTitle: 'เบราว์เซอร์นี้ติดตั้งแอปไม่ได้',
+    unsupportedDesc: 'เปิด Kafé OS ด้วย Chrome, Edge หรือ Safari แล้วกลับมาติดตั้งที่หน้านี้ ระหว่างนี้ยังใช้งานผ่านเบราว์เซอร์ได้ตามปกติ',
+    offlineTitle: 'ออฟไลน์อยู่',
+    offlineDetail: 'ยังขายและบันทึกข้อมูลไม่ได้จนกว่าอินเทอร์เน็ตจะกลับมา',
+    backOnline: 'กลับมาออนไลน์แล้ว',
+    updateTitle: 'มีเวอร์ชันใหม่',
+    updateDetail: 'กดโหลดใหม่เมื่อไม่มีออเดอร์ค้างอยู่',
+    updateReload: 'โหลดใหม่ตอนนี้',
+    updateLater: 'ไว้ทีหลัง',
+    updateReloading: 'กำลังอัปเดต...',
+    // Illustrated install guide (dialog with platform tabs + one picture per step).
+    // Quoted menu names must match the labels drawn in the pictures. A step `body`
+    // doubles as the picture's screen-reader description. Touch = "แตะ", PC/Mac = "คลิก".
+    guide: {
+      title: 'ติดตั้ง Kafé OS',
+      subtitle: 'เลือกอุปกรณ์ที่ใช้ แล้วทำตามภาพทีละขั้น',
+      openButton: 'ดูวิธีติดตั้งแบบมีภาพ',
+      tabsLabel: 'เลือกอุปกรณ์',
+      tabs: { pc: 'PC', ios: 'iPhone / iPad', mac: 'Mac', android: 'Android' },
+      detected: 'เครื่องนี้',
+      installNowTitle: 'เครื่องนี้ติดตั้งได้ทันที ไม่ต้องทำตามขั้นตอน',
+      installNowButton: 'ติดตั้งเลย',
+      stepOf: (n: number, total: number) => `ขั้นที่ ${n} จาก ${total}`,
+      prev: 'ก่อนหน้า',
+      next: 'ถัดไป',
+      finish: 'เสร็จสิ้น',
+      slidesLabel: 'ขั้นตอนการติดตั้ง',
+      goToStep: (n: number) => `ไปที่ขั้นที่ ${n}`,
+      steps: {
+        pc: [
+          {
+            title: 'คลิกไอคอนติดตั้ง',
+            body: 'อยู่ท้ายแถบที่อยู่เว็บของ Chrome หรือ Edge เป็นรูปจอคอมมีลูกศรชี้ลง ชี้เมาส์ค้างไว้จะขึ้นว่า “ติดตั้ง Kafé OS”',
+          },
+          {
+            title: 'คลิก “ติดตั้ง”',
+            body: 'หน้าต่างยืนยันจะเด้งขึ้นมาใต้แถบที่อยู่เว็บ คลิกปุ่ม “ติดตั้ง” ข้างปุ่ม “ยกเลิก”',
+          },
+          {
+            title: 'เสร็จแล้ว เปิดจากไอคอนได้เลย',
+            body: 'Kafé OS เปิดเป็นหน้าต่างของตัวเอง และมีไอคอนบนแถบงานกับเมนูเริ่ม ครั้งต่อไปคลิกไอคอนนี้ได้เลย',
+          },
+        ],
+        ios: [
+          {
+            title: 'แตะปุ่มแชร์',
+            body: 'ปุ่มรูปสี่เหลี่ยมที่มีลูกศรชี้ขึ้น อยู่บนแถบเครื่องมือของ Safari ถ้าไม่เห็นให้แตะ “…” ก่อน (ใน Chrome ปุ่มแชร์อยู่ในแถบที่อยู่เว็บ)',
+          },
+          {
+            title: 'แตะ “เพิ่มไปยังหน้าจอโฮม”',
+            body: 'เลื่อนเมนูแชร์ลงมา จะเห็นตัวเลือกนี้ มีไอคอนรูปสี่เหลี่ยมกับเครื่องหมายบวกอยู่ข้าง ๆ',
+          },
+          {
+            title: 'แตะ “เพิ่ม”',
+            body: 'ปุ่ม “เพิ่ม” อยู่มุมขวาบนของหน้าต่าง ชื่อและไอคอนแอปตั้งไว้ให้แล้ว ไม่ต้องแก้',
+          },
+          {
+            title: 'เสร็จแล้ว เปิดจากหน้าจอโฮม',
+            body: 'ไอคอน Kafé OS อยู่บนหน้าจอโฮมแล้ว แตะเพื่อเปิดแบบเต็มจอ ไม่มีแถบของเบราว์เซอร์',
+          },
+        ],
+        mac: [
+          {
+            title: 'คลิกเมนู “ไฟล์”',
+            body: 'เปิด Kafé OS ใน Safari แล้วคลิกเมนู “ไฟล์” บนแถบเมนูด้านบนสุดของจอ',
+          },
+          {
+            title: 'เลือก “เพิ่มไปยัง Dock…”',
+            body: 'อยู่ในรายการเมนู “ไฟล์” ที่เปิดขึ้นมา',
+          },
+          {
+            title: 'คลิก “เพิ่ม” แล้วเปิดจาก Dock',
+            body: 'ชื่อและไอคอนแอปตั้งไว้ให้แล้ว คลิก “เพิ่ม” ไอคอน Kafé OS จะอยู่ใน Dock ด้านล่างจอ คลิกเพื่อเปิดเป็นหน้าต่างของตัวเอง',
+          },
+        ],
+        android: [
+          {
+            title: 'แตะเมนู ⋮',
+            body: 'ปุ่มจุดสามจุดเรียงแนวตั้ง อยู่มุมขวาบนของ Chrome',
+          },
+          {
+            title: 'แตะ “ติดตั้งแอป”',
+            body: 'อยู่ในรายการเมนูที่เปิดขึ้นมา บางเครื่องจะเขียนว่า “เพิ่มลงในหน้าจอหลัก”',
+          },
+          {
+            title: 'แตะ “ติดตั้ง”',
+            body: 'หน้าต่างยืนยันจะขึ้นมา แตะ “ติดตั้ง” แล้วรอสักครู่ให้ไอคอนขึ้น',
+          },
+          {
+            title: 'เสร็จแล้ว เปิดจากหน้าจอหลัก',
+            body: 'ไอคอน Kafé OS อยู่บนหน้าจอหลักหรือในรายการแอปแล้ว แตะเพื่อเปิดแบบเต็มจอ',
+          },
+        ],
+      },
+      notes: {
+        pc: 'ไม่เห็นไอคอนติดตั้ง? คลิกเมนู ⋮ (Chrome) หรือ ⋯ (Edge) ที่มุมขวาบน แล้วเลือก “ติดตั้ง Kafé OS…” (ใน Edge อยู่ในเมนูย่อย “แอป”)',
+        ios: 'เปิดลิงก์มาจาก LINE หรือแอปอื่น? เปิดหน้านี้ใน Safari ก่อน แล้วค่อยทำตามขั้นตอน',
+        mac: 'ใช้ Chrome หรือ Edge บน Mac? ทำตามแท็บ PC ได้เลย ส่วน Safari ต้องเป็น macOS Sonoma ขึ้นไป',
+        android: 'ใช้ Samsung Internet? แตะเมนู ≡ แล้วเลือก “เพิ่มหน้าไปยัง” → “หน้าจอหลัก”',
+      },
+    },
   },
 
   // ── Shopping List ─────────────────────────────────────────────────────────
@@ -320,6 +440,14 @@ export const th = {
 
   // ── POS Terminal ──────────────────────────────────────────────────────────
   pos: {
+    // ── Board-game table tab ────────────────────────────────────────────────
+    tableBanner: (name: string) => `กำลังลงบิลเข้าโต๊ะ ${name}`,
+    tableBannerHint: 'ออร์เดอร์จะไปรวมที่โต๊ะ แล้วจ่ายทีเดียวตอนปิดโต๊ะ',
+    tableExit: 'ออกจากโหมดโต๊ะ',
+    tableAddToTab: 'ลงบิลโต๊ะ',
+    tableAdded: (name: string) => `ลงบิลโต๊ะ ${name} แล้ว`,
+    tableAddedMsg: 'ไปเก็บเงินรวมที่หน้าผังโต๊ะตอนปิดโต๊ะ',
+
     menuTitle: 'เมนู',
     searchPlaceholder: 'ค้นหาเมนู ชื่อ หรือ hotkey...',
     tabMenu: 'เมนู',
@@ -333,7 +461,7 @@ export const th = {
     noSearchResults: 'ไม่พบเมนูที่ค้นหา',
     emptyCategory: 'ยังไม่มีสินค้าในหมวดนี้',
     noSearchHint: 'ลองค้นหาด้วยคำอื่น หรือตรวจสอบตัวสะกดอีกครั้ง',
-    emptyCategoryHint: 'เพิ่มสินค้าได้ที่เมนู Catalog',
+    emptyCategoryHint: 'เพิ่มสินค้าได้ที่เมนูหมวดหมู่สินค้า',
     currentBill: 'บิลปัจจุบัน',
     pointsUnit: (n: string) => `${n} แต้ม`,
     redeemSuffix: ' • แลกรางวัล',
@@ -350,6 +478,10 @@ export const th = {
     discount: 'ส่วนลด',
     grandTotal: 'รวมทั้งสิ้น',
     void: 'ยกเลิกบิล',
+    voidConfirmTitle: 'ยกเลิกบิลนี้?',
+    voidConfirmBody: (items: number, total: string) => `ล้าง ${items} รายการ (${total}) ออกจากตะกร้า ย้อนกลับไม่ได้`,
+    voidConfirm: 'ยกเลิกบิล',
+    voidKeep: 'เก็บไว้',
     promotions: 'โปรโมชั่น',
     promoPanelTitle: 'โปรโมชั่นที่ใช้ได้',
     noPromos: 'ไม่มีโปรโมชั่นที่ใช้ได้กับตะกร้านี้',
@@ -379,6 +511,8 @@ export const th = {
     orderSaveFailed: 'บิลบันทึกไม่สำเร็จ',
     promoRefreshedMsg: (reason: string) => `${reason} — รีเฟรชโปรโมชั่นให้แล้ว กรุณาตรวจสอบแล้วลองใหม่`,
     cartRestoredMsg: (reason: string) => `${reason} — กู้คืนตะกร้าให้แล้ว ลองใหม่อีกครั้ง`,
+    memberCleared: 'ข้อมูลสมาชิกใช้ไม่ได้แล้ว',
+    memberClearedMsg: 'นำสมาชิกออกจากบิลและกู้คืนตะกร้าให้แล้ว — สแกนสมาชิกใหม่แล้วลองอีกครั้ง',
     pay: { cash: 'เงินสด', card: 'บัตร', qr: 'QR PromptPay', line: 'LINE Pay' },
     payReceipt: { cash: 'เงินสด', card: 'บัตรเครดิต', qr: 'QR PromptPay', line: 'LINE Pay' },
   },

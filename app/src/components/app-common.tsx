@@ -4,6 +4,7 @@ import { useState, useCallback, createContext, useContext, useRef, useEffect, Fr
 import { createPortal } from 'react-dom';
 import Icon from './icons';
 import { useCurrentUser } from '@/hooks/use-current-user';
+import { useFeatures, FEATURE_BOARDGAME } from '@/hooks/use-features';
 import { displayNumber, parseNumberInput, clampNumber } from '@/lib/number-input';
 import { useI18n } from '@/lib/i18n';
 // Import the gsap-free count-up directly (not via the @/lib/motion barrel, which
@@ -56,123 +57,213 @@ export const ToastProvider = ({ children }: { children: React.ReactNode }) => {
 // ---------- Sidebar ----------
 // Labels are resolved at render time from the active language (`t.nav[id]`); the array
 // holds only structural metadata (id, icon, visibility flags).
-export type NavItem = { id: string; icon?: string; soft?: boolean; adminOnly?: boolean; ownerOnly?: boolean; divider?: boolean; header?: boolean; };
+export type NavItem = {
+  id: string; icon?: string; soft?: boolean; adminOnly?: boolean; ownerOnly?: boolean;
+  divider?: boolean; header?: boolean;
+  /** Store entitlement required to see this item — hidden when the add-on isn't sold. */
+  feature?: string;
+};
 
 // Grouped by working mode so each job (taking orders, kitchen/stock, CRM, running
 // the shop, one-time setup) sits together and is quick to find. `header` rows are
-// section titles (label from `t.navSection[id]`) — rendered as a heading when the
-// sidebar is expanded, as a plain divider when it's collapsed.
+// group headings (label from `t.navSection[id]`, glyph from `icon`) — rendered as a
+// collapsible heading when the sidebar is expanded, as a plain divider when it's
+// collapsed. Within a group, items run most-used first.
 export const NAV: NavItem[] = [
-  // Front-of-house — everything a cashier touches during a shift.
-  { id: 'sec-service', header: true },
+  // Front-of-house — everything a cashier touches during a shift. The cash drawer
+  // is opened/closed every day, so it sits above the occasional receipt reprint.
+  { id: 'sec-service', header: true, icon: 'coffee' },
   { id: 'pos',       icon: 'pos' },
   { id: 'kds',       icon: 'kds' },
   { id: 'pre-orders',    icon: 'calendar' },
-  { id: 'receipt-copies', icon: 'reports', adminOnly: true },
   { id: 'cash',      icon: 'cash',     adminOnly: true },
+  { id: 'receipt-copies', icon: 'reports', adminOnly: true },
 
-  // Kitchen & stock — recipes, ingredients, counts, purchasing.
-  { id: 'sec-kitchen', header: true },
-  { id: 'bom',       icon: 'inv' },
-  { id: 'bakery',    icon: 'cake' },
+  // Board-game add-on — the whole group disappears for stores without the
+  // `vertical.boardgame` entitlement (its endpoints answer 404 there).
+  { id: 'sec-boardgame', header: true, icon: 'dice' },
+  { id: 'floor',       icon: 'park',     feature: FEATURE_BOARDGAME },
+  { id: 'table-setup', icon: 'settings', feature: FEATURE_BOARDGAME, adminOnly: true },
+
+  // Kitchen & stock — the daily stock jobs first (check, count, buy), then the
+  // menu-definition screens that are edited now and then (prep, recipes, catalog).
+  { id: 'sec-kitchen', header: true, icon: 'pot' },
   { id: 'inventory', icon: 'inv',      soft: true },
   { id: 'stock-take',    icon: 'check' },
   { id: 'shopping-list', icon: 'cart' },
+  { id: 'bakery',    icon: 'cake' },
+  { id: 'bom',       icon: 'inv' },
+  { id: 'catalog',   icon: 'inv',      ownerOnly: true },
 
   // Customers & marketing.
-  { id: 'sec-crm', header: true },
+  { id: 'sec-crm', header: true, icon: 'user' },
   { id: 'promotions', icon: 'tag' },
   { id: 'members',   icon: 'customers', adminOnly: true },
   { id: 'customers', icon: 'customers', soft: true },
   { id: 'sales',     icon: 'staff',    adminOnly: true },
 
   // Manage & reports — the manager's overview of the shop.
-  { id: 'sec-manage', header: true },
+  { id: 'sec-manage', header: true, icon: 'chart' },
   { id: 'dashboard', icon: 'chart' },
   { id: 'reports',   icon: 'reports',  soft: true },
   { id: 'protocols', icon: 'check' },
   { id: 'shifts',    icon: 'calendar' },
   { id: 'hr',        icon: 'staff',    adminOnly: true },
 
-  // System setup — configured once, rarely touched day to day.
-  { id: 'sec-setup', header: true },
-  { id: 'catalog',   icon: 'inv',      ownerOnly: true },
+  // System setup — configured once, rarely touched day to day. General settings
+  // lead; the recycle bin (rare, destructive) goes last.
+  { id: 'sec-setup', header: true, icon: 'settings' },
+  { id: 'settings',  icon: 'settings', soft: true },
   { id: 'hardware',  icon: 'printer' },
   { id: 'recycle-bin', icon: 'trash',  adminOnly: true },
-  { id: 'settings',  icon: 'settings', soft: true },
 ];
+
+/** The group (header id) a screen belongs to — from the raw NAV, independent of role filtering. */
+export const groupOfScreen = (screen: string): string | undefined => {
+  let group: string | undefined;
+  for (const n of NAV) {
+    if (n.header) group = n.id;
+    else if (n.id === screen) return group;
+  }
+  return undefined;
+};
+
+export interface NavSection { id: string; icon?: string; items: NavItem[] }
+
+/**
+ * NAV grouped into { header, items } sections with everything this role / store
+ * cannot see removed (and any section left empty dropped).
+ *
+ * THE single source of nav visibility: the desktop Sidebar and the phone nav
+ * (mobile-nav.tsx) both render from this, so a screen can never be visible in one
+ * and unreachable in the other. Add new visibility rules here, nowhere else.
+ */
+export const visibleNavSections = (role: string | undefined, features: readonly string[] | undefined): NavSection[] => {
+  const isAdmin = role === 'OWNER' || role === 'MANAGER';
+  const sections: NavSection[] = [];
+  for (const n of NAV) {
+    if (n.header) { sections.push({ id: n.id, icon: n.icon, items: [] }); continue; }
+    if (n.divider) continue;
+    if (n.adminOnly && !isAdmin) continue;
+    if (n.ownerOnly && role !== 'OWNER') continue;
+    if (n.feature && !features?.includes(n.feature)) continue;
+    sections[sections.length - 1]?.items.push(n);
+  }
+  return sections.filter((s) => s.items.length > 0);
+};
+
+/** The current user's visible nav + the bits of identity both navs display. */
+export const useVisibleNav = () => {
+  const { t } = useI18n();
+  const { data: me } = useCurrentUser();
+  const { data: features } = useFeatures();
+  const role = me?.role;
+  return {
+    sections: visibleNavSections(role, features),
+    me,
+    role,
+    isAdmin: role === 'OWNER' || role === 'MANAGER',
+    initial: me?.name ? me.name.charAt(0).toUpperCase() : '?',
+    roleLabel: role ? (t.roles as Record<string, string>)[role] ?? role : '',
+    navLabel: (id: string) => (t.nav as Record<string, string>)[id] ?? id,
+    sectionLabel: (id: string) => (t.navSection as Record<string, string>)[id] ?? id,
+  };
+};
+
+// Which sidebar groups are open, remembered per device. Storage can be blocked
+// (private mode, quota) — the sidebar then just falls back to its default.
+const SB_GROUPS_KEY = 'cafe_pos_sidebar_groups';
+const readStoredGroups = (): Record<string, boolean> | null => {
+  try {
+    const raw = window.localStorage.getItem(SB_GROUPS_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const out: Record<string, boolean> = {};
+    for (const [k, v] of Object.entries(parsed)) if (typeof v === 'boolean') out[k] = v;
+    return out;
+  } catch {
+    return null;
+  }
+};
 
 interface SidebarProps { current: string; onNavigate: (id: string) => void; onLogout?: () => void; branchName?: string; collapsed?: boolean; onToggle?: () => void; }
 
 export const Sidebar = ({ current, onNavigate, onLogout, branchName = 'Sukhumvit 49', collapsed = false, onToggle }: SidebarProps) => {
   const { t } = useI18n();
-  const navLabel = (id: string) => (t.nav as Record<string, string>)[id] ?? id;
-  const sectionLabel = (id: string) => (t.navSection as Record<string, string>)[id] ?? id;
-  const { data: me } = useCurrentUser();
-  const role = me?.role;
-  const isAdmin = role === 'OWNER' || role === 'MANAGER';
-  const initial = me?.name ? me.name.charAt(0).toUpperCase() : '?';
+  // Role / feature filtering is shared with the phone nav — see visibleNavSections.
+  const { sections: visibleSections, me, initial, roleLabel, navLabel, sectionLabel } = useVisibleNav();
+  const currentGroupId = groupOfScreen(current);
 
-  // Group the flat NAV into { header, items } sections, dropping items the current
-  // role can't see (and any section left empty as a result).
-  const sections: { id: string; items: NavItem[] }[] = [];
-  for (const n of NAV) {
-    if (n.header) { sections.push({ id: n.id, items: [] }); continue; }
-    if (n.divider) continue;
-    if (n.adminOnly && !isAdmin) continue;
-    if (n.ownerOnly && role !== 'OWNER') continue;
-    sections[sections.length - 1]?.items.push(n);
+  // Each group is a collapsible section. The open set is explicit and remembered
+  // per device: first run opens only the group holding the current screen, after
+  // that every group stays exactly as the user left it — nothing closes on its own,
+  // so the list never shifts under a finger mid-tap.
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(
+    () => readStoredGroups() ?? (currentGroupId ? { [currentGroupId]: true } : {}),
+  );
+  const toggleGroup = (id: string) => setOpenGroups((prev) => ({ ...prev, [id]: !prev[id] }));
+
+  // Arriving on a screen from elsewhere (rail, in-app link, bottom tabs) reveals
+  // its group. Adjusted during render, keyed on the screen, so it runs once per
+  // navigation and never fights a manual close made afterwards.
+  const [revealedFor, setRevealedFor] = useState(current);
+  if (revealedFor !== current) {
+    setRevealedFor(current);
+    if (currentGroupId && !openGroups[currentGroupId]) {
+      setOpenGroups({ ...openGroups, [currentGroupId]: true });
+    }
   }
-  const visibleSections = sections.filter((s) => s.items.length > 0);
-  const activeSectionId = visibleSections.find((s) => s.items.some((it) => it.id === current))?.id;
 
-  // Each section is a collapsible dropdown. By default only the group holding the
-  // active screen is open; `openOverride` records explicit user toggles either way,
-  // so opening/closing any group sticks while still auto-opening wherever you are.
-  const [openOverride, setOpenOverride] = useState<Record<string, boolean>>({});
-  const isSectionOpen = (id: string) => openOverride[id] ?? id === activeSectionId;
-  const toggleSection = (id: string) =>
-    setOpenOverride((prev) => ({ ...prev, [id]: !(prev[id] ?? id === activeSectionId) }));
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SB_GROUPS_KEY, JSON.stringify(openGroups));
+    } catch {
+      // Storage unavailable — the open set simply lasts for this session only.
+    }
+  }, [openGroups]);
 
   // Item row shared by both layouts (accordion when expanded, flat rail when collapsed).
   const renderItem = (n: NavItem) => {
     const active = current === n.id;
     return (
-      <button key={n.id} onClick={() => onNavigate(n.id)}
+      <button key={n.id} type="button" onClick={() => onNavigate(n.id)}
+        data-nav-id={n.id}
         className={`sb-item${active ? ' active' : ''}`}
         title={collapsed ? navLabel(n.id) : undefined}
         aria-current={active ? 'page' : undefined}
         style={{
-          display: 'flex', alignItems: 'center', gap: 12,
-          padding: collapsed ? '10px 0' : '10px 12px', borderRadius: 8,
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: collapsed ? '10px 0' : '10px 10px', borderRadius: 8,
           justifyContent: collapsed ? 'center' : 'flex-start',
           fontSize: 14, minHeight: 44,
           textAlign: 'left', width: '100%',
           position: 'relative',
         }}
       >
-        {n.icon && <Icon name={n.icon} size={18} />}
-        {!collapsed && <span className="sb-fade" style={{flex: 1, whiteSpace: 'nowrap'}}>{navLabel(n.id)}</span>}
+        {n.icon && <Icon name={n.icon} size={18} style={{flexShrink: 0}} />}
+        {!collapsed && <span className="sb-fade sb-item-label">{navLabel(n.id)}</span>}
         {!collapsed && n.soft && <span className="sb-fade" style={{fontSize: 10, color: 'currentColor', opacity: 0.55, fontWeight: 500}}>P1</span>}
       </button>
     );
   };
 
   return (
-    // Desktop/tablet only: below 768px the BottomTabBar is the nav, so the
-    // sidebar is hidden to avoid a duplicate nav landmark and to free the full
-    // width for content on phones.
+    // Desktop/tablet only: below 768px <MobileNav> (mobile-nav.tsx — bottom tab bar
+    // + menu sheet) is the nav, so the sidebar is hidden to avoid a duplicate nav
+    // landmark and to free the full width for content on phones.
     <div className="hidden md:block" style={{ position: 'relative', flexShrink: 0 }}>
     <aside className="sidebar-surface" style={{
       width: collapsed ? 64 : 240,
-      height: '100dvh',
+      height: 'var(--app-h, 100dvh)',
       display: 'flex', flexDirection: 'column',
       borderRight: '1px solid var(--sb-border)',
       transition: 'width var(--dur-slow) var(--ease-out)',
       overflow: 'hidden',
     }}>
       <div style={{
-        padding: collapsed ? '16px 0 12px' : '20px 20px 16px',
+        // Expanded: left edge lines up with the group-heading icon tiles below.
+        padding: collapsed ? '16px 0 12px' : '16px 14px 12px',
         display: 'flex',
         flexDirection: collapsed ? 'column' : 'row',
         alignItems: 'center',
@@ -211,54 +302,50 @@ export const Sidebar = ({ current, onNavigate, onLogout, branchName = 'Sukhumvit
         )}
       </div>
 
-      <nav aria-label="เมนูหลัก" style={{padding: collapsed ? '8px 8px' : '8px 12px', flex: 1, display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto', overflowX: 'hidden', transition: 'padding var(--dur-slow) var(--ease-out)'}}>
+      <nav aria-label={t.sidebar.navLabel} style={{padding: collapsed ? '8px 8px' : '4px 8px 8px', flex: 1, display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto', overflowX: 'hidden', transition: 'padding var(--dur-slow) var(--ease-out)'}}>
         {collapsed
           ? // Icon-only rail: no room for group headings, so show every item and
             // separate the groups with a hairline divider (none before the first).
             visibleSections.map((s, si) => (
               <Fragment key={s.id}>
-                {si > 0 && <div style={{height: 1, background: 'var(--sb-divider)', margin: '8px 6px 4px'}} />}
+                {si > 0 && <div className="sb-rail-divider" />}
                 {s.items.map(renderItem)}
               </Fragment>
             ))
-          : // Expanded: each group is a collapsible dropdown — click the heading to
-            // open/close it, so only the functions you need are on screen at once.
+          : // Expanded: each group is a collapsible section — the whole heading row
+            // toggles it, so only the functions you need are on screen at once.
             visibleSections.map((s) => {
-              const open = isSectionOpen(s.id);
+              const open = !!openGroups[s.id];
+              const isCurrent = s.id === currentGroupId;
+              const btnId = `sb-group-${s.id}`;
+              const panelId = `sb-panel-${s.id}`;
               return (
-                <div key={s.id} style={{display: 'flex', flexDirection: 'column', gap: 2}}>
+                <div key={s.id} className="sb-group">
                   <button
-                    onClick={() => toggleSection(s.id)}
-                    className={`sb-section-btn${open ? ' open' : ''}${s.id === activeSectionId ? ' current' : ''}`}
+                    type="button"
+                    id={btnId}
+                    onClick={() => toggleGroup(s.id)}
+                    className={`sb-group-btn${open ? ' open' : ''}${isCurrent ? ' current' : ''}`}
                     aria-expanded={open}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      width: '100%', marginTop: 4, padding: '9px 12px',
-                      borderRadius: 8, border: 'none', cursor: 'pointer',
-                      fontFamily: 'inherit', minHeight: 36,
-                      position: 'relative',
-                    }}
+                    aria-controls={panelId}
                   >
-                    {/* color:currentColor → label + chevron both track the button's
-                        hover/open/current color shift (set in .sb-section-btn CSS). */}
-                    <span className="sb-fade" style={{
-                      flex: 1, textAlign: 'left', fontSize: 11, fontWeight: 700,
-                      letterSpacing: '0.06em', textTransform: 'uppercase',
-                      color: 'currentColor', whiteSpace: 'nowrap',
-                    }}>{sectionLabel(s.id)}</span>
-                    <Icon name="chevronDown" size={14} style={{
-                      color: 'currentColor', flexShrink: 0,
-                      transform: open ? 'none' : 'rotate(-90deg)',
-                      transition: 'transform var(--dur-slow) var(--ease-out)',
-                    }} />
+                    <span className="sb-group-icon"><Icon name={s.icon ?? 'list'} size={18} strokeWidth={1.75} /></span>
+                    <span className="sb-fade sb-group-text">
+                      <span className="sb-group-label">{sectionLabel(s.id)}</span>
+                      {/* Closed group that holds the current screen: name the screen
+                          under the heading so "where am I" survives collapsing it. */}
+                      {isCurrent && !open && <span className="sb-group-here">{navLabel(current)}</span>}
+                    </span>
+                    <Icon name="chevronDown" size={18} strokeWidth={2} className="sb-group-chevron" />
                   </button>
-                  {open && (
-                    // Keyed by open-state so the reveal animation replays each time
-                    // the group is opened, not only on first mount.
-                    <div key={`${s.id}-items`} className="sb-section-items" style={{display: 'flex', flexDirection: 'column', gap: 2}}>
-                      {s.items.map(renderItem)}
+                  {/* Always mounted so open/close can animate height; `inert` keeps a
+                      closed group out of the tab order and the accessibility tree. */}
+                  <div id={panelId} role="group" aria-labelledby={btnId} inert={!open}
+                    className={`sb-group-panel${open ? ' open' : ''}`}>
+                    <div className="sb-group-clip">
+                      <div className="sb-group-items">{s.items.map(renderItem)}</div>
                     </div>
-                  )}
+                  </div>
                 </div>
               );
             })}
@@ -283,7 +370,7 @@ export const Sidebar = ({ current, onNavigate, onLogout, branchName = 'Sukhumvit
           {!collapsed && (
             <div className="sb-fade" style={{flex: 1, minWidth: 0}}>
               <div style={{fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--sb-text-strong)'}}>{me?.name ?? '...'}</div>
-              <div style={{fontSize: 11, color: 'var(--sb-text-muted)'}}>{role ? (t.roles as Record<string, string>)[role] ?? role : ''}</div>
+              <div style={{fontSize: 11, color: 'var(--sb-text-muted)'}}>{roleLabel}</div>
             </div>
           )}
         </div>
@@ -348,14 +435,11 @@ const KPIValue = ({ value, prefix, suffix, countUp }: { value: number | string; 
 export const KPICard = ({ label, value, prefix='', suffix='', delta, vsLabel, countUp }: KPICardProps) => {
   const positive = (delta ?? 0) >= 0;
   return (
-    <div style={{
-      background: 'var(--color-surface)',
-      border: '1px solid var(--color-border)',
-      borderRadius: 'var(--radius-lg)', padding: 'var(--space-5)',
-      display: 'flex', flexDirection: 'column', gap: 'var(--space-3)',
-    }}>
+    // .kpi-card / .kpi-value (globals.css): same look as before on desktop, tighter
+    // padding and a smaller figure on phones so two cards fit side by side.
+    <div className="kpi-card">
       <div style={{fontSize: 13, color: 'var(--color-text-secondary)', fontWeight: 500}}>{label}</div>
-      <div className="num" style={{fontSize: 32, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--color-text)'}}>
+      <div className="num kpi-value">
         <KPIValue value={value} prefix={prefix} suffix={suffix} countUp={countUp} />
       </div>
       {delta != null && (
@@ -509,7 +593,7 @@ export const Select = ({
             top: pos.up ? undefined : pos.top,
             bottom: pos.up ? window.innerHeight - pos.top : undefined,
             background: 'var(--color-surface)', border: '1px solid var(--color-border)',
-            borderRadius: 8, boxShadow: 'var(--shadow-md)', zIndex: 2000,
+            borderRadius: 8, boxShadow: 'var(--shadow-md)', zIndex: 'var(--z-popover)',
             overflowY: 'auto', maxHeight: pos.maxHeight, padding: 4,
           }}
         >
@@ -548,196 +632,12 @@ export const Select = ({
   );
 };
 
-// ---------- Bottom Tab Bar (mobile only) ----------
-interface BottomTabBarProps {
-  currentScreen: string;
-  onNavigate: (screen: string) => void;
-}
-
-// Labels resolved at render time: main tabs from `t.tabs[id]`, more-sheet items from `t.nav[id]`.
-const MAIN_TABS = [
-  { id: 'pos',       icon: 'pos' },
-  { id: 'kds',       icon: 'kds' },
-  { id: 'inventory', icon: 'inv' },
-  { id: 'dashboard', icon: 'chart' },
-] as const;
-
-const MORE_ITEMS = [
-  { id: 'bom',          icon: 'inv' },
-  { id: 'pre-orders',   icon: 'calendar' },
-  { id: 'catalog',      icon: 'tag' },
-  { id: 'hr',           icon: 'staff' },
-  { id: 'promotions',   icon: 'tag' },
-  { id: 'protocols',    icon: 'check' },
-  { id: 'shifts',       icon: 'calendar' },
-  { id: 'cash',         icon: 'cash' },
-  { id: 'shopping-list',icon: 'cart' },
-  { id: 'hardware',     icon: 'printer' },
-] as const;
-
-const MAIN_TAB_IDS = new Set<string>(MAIN_TABS.map((t) => t.id));
-
-export const BottomTabBar = ({ currentScreen, onNavigate }: BottomTabBarProps) => {
-  const { t } = useI18n();
-  const tabLabel = (id: string) => (t.tabs as Record<string, string>)[id] ?? id;
-  const navLabel = (id: string) => (t.nav as Record<string, string>)[id] ?? id;
-  const [moreOpen, setMoreOpen] = useState(false);
-  const sheetRef = useRef<HTMLDivElement>(null);
-
-  // Close sheet on outside tap
-  useEffect(() => {
-    if (!moreOpen) return;
-    const handler = (e: PointerEvent) => {
-      if (sheetRef.current && !sheetRef.current.contains(e.target as Node)) {
-        setMoreOpen(false);
-      }
-    };
-    document.addEventListener('pointerdown', handler);
-    return () => document.removeEventListener('pointerdown', handler);
-  }, [moreOpen]);
-
-  const activeIsMore = !MAIN_TAB_IDS.has(currentScreen);
-
-  return (
-    <>
-      {/* Sheet overlay */}
-      {moreOpen && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label={t.tabs.moreOptions}
-          style={{
-            position: 'fixed', inset: 0, zIndex: 60,
-            background: 'rgba(26,16,8,0.45)',
-            backdropFilter: 'blur(4px)',
-          }}
-        >
-          <div
-            ref={sheetRef}
-            style={{
-              position: 'absolute', left: 0, right: 0, bottom: 0,
-              background: 'var(--color-surface)',
-              borderRadius: '16px 16px 0 0',
-              paddingBottom: 'calc(env(safe-area-inset-bottom) + 16px)',
-              boxShadow: 'var(--shadow-lg)',
-              animation: 'sheet-in 220ms var(--ease-out)',
-            }}
-          >
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '16px 20px 12px',
-              borderBottom: '1px solid var(--color-border)',
-            }}>
-              <span style={{ fontWeight: 700, fontSize: 16 }}>{t.tabs.moreTitle}</span>
-              <button
-                onClick={() => setMoreOpen(false)}
-                aria-label={t.tabs.closeMore}
-                className="icon-btn hit-44"
-                style={{
-                  width: 32, height: 32, borderRadius: 999,
-                  background: 'var(--color-surface-2)',
-                  display: 'grid', placeItems: 'center',
-                  border: 'none', cursor: 'pointer',
-                }}
-              >
-                <Icon name="x" size={16} />
-              </button>
-            </div>
-            <div style={{
-              display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
-              padding: '12px 8px',
-              gap: 4,
-            }}>
-              {MORE_ITEMS.map((item) => {
-                const active = currentScreen === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => { onNavigate(item.id); setMoreOpen(false); }}
-                    className="pressable"
-                    aria-current={active ? 'page' : undefined}
-                    style={{
-                      display: 'flex', flexDirection: 'column', alignItems: 'center',
-                      gap: 6, padding: '12px 4px', borderRadius: 10,
-                      background: active ? 'rgba(212,165,116,0.15)' : 'transparent',
-                      color: active ? 'var(--color-accent)' : 'var(--color-text-secondary)',
-                      border: 'none', cursor: 'pointer',
-                      minHeight: 72,
-                    }}
-                  >
-                    <Icon name={item.icon} size={22} color={active ? 'var(--color-accent)' : 'var(--color-text-secondary)'} />
-                    <span style={{ fontSize: 11, fontWeight: active ? 600 : 500, textAlign: 'center', lineHeight: 1.2 }}>
-                      {navLabel(item.id)}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Tab Bar */}
-      <nav
-        aria-label="Main navigation"
-        className="md:hidden"
-        style={{
-          position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 50,
-          height: 64,
-          background: 'var(--color-surface)',
-          borderTop: '1px solid var(--color-border)',
-          display: 'flex',
-          paddingBottom: 'env(safe-area-inset-bottom)',
-          boxShadow: '0 -2px 12px rgba(61,40,23,0.08)',
-        }}
-      >
-        {MAIN_TABS.map((tab) => {
-          const active = currentScreen === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => onNavigate(tab.id)}
-              aria-current={active ? 'page' : undefined}
-              style={{
-                flex: 1, display: 'flex', flexDirection: 'column',
-                alignItems: 'center', justifyContent: 'center',
-                gap: 3, border: 'none', background: 'transparent',
-                color: active ? 'var(--color-accent)' : 'var(--color-text-muted)',
-                cursor: 'pointer', padding: '4px 0',
-                transition: 'color 150ms',
-              }}
-            >
-              <Icon name={tab.icon} size={22} color={active ? 'var(--color-accent)' : 'var(--color-text-muted)'} />
-              <span style={{ fontSize: 10, fontWeight: active ? 700 : 500, letterSpacing: '0.01em' }}>
-                {tabLabel(tab.id)}
-              </span>
-            </button>
-          );
-        })}
-
-        {/* More tab */}
-        <button
-          onClick={() => setMoreOpen((v) => !v)}
-          aria-current={activeIsMore ? 'page' : undefined}
-          style={{
-            flex: 1, display: 'flex', flexDirection: 'column',
-            alignItems: 'center', justifyContent: 'center',
-            gap: 3, border: 'none', background: 'transparent',
-            color: activeIsMore || moreOpen ? 'var(--color-accent)' : 'var(--color-text-muted)',
-            cursor: 'pointer', padding: '4px 0',
-            transition: 'color 150ms',
-          }}
-        >
-          <Icon name="dots" size={22} color={activeIsMore || moreOpen ? 'var(--color-accent)' : 'var(--color-text-muted)'} />
-          <span style={{ fontSize: 10, fontWeight: activeIsMore || moreOpen ? 700 : 500, letterSpacing: '0.01em' }}>
-            {t.tabs.more}
-          </span>
-        </button>
-      </nav>
-
-    </>
-  );
-};
+// ---------- Layout primitives ----------
+// <MasterDetail> and <ModalShell> live in ./layout; re-exported so screens can keep
+// importing shared UI from one place. The phone nav (bottom tab bar + menu sheet)
+// is in ./mobile-nav and is mounted once, by app/page.tsx.
+export { MasterDetail, ModalShell } from './layout';
+export type { MasterDetailProps, ModalShellProps } from './layout';
 
 // ---------- NumberInput ----------
 // Controlled numeric <input> that can actually be CLEARED.
