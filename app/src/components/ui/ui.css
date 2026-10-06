@@ -1,0 +1,152 @@
+/* ════════════════════════════════════════════════════════════════
+   Design-system primitives — src/components/ui (Button, Spinner, Field,
+   Input, Banner, Keypad). Only the login screen uses them.
+
+   Imported by the primitives themselves (never by app/globals.css), so the
+   rules ship only with the code that renders them. Every selector is a
+   `.ui-*` class: no element, attribute-only or :root selectors, so nothing
+   here can match markup in the legacy screens. Tokens: ./tokens.css
+   (`--ds-*` names only, which the legacy globals.css never defines).
+
+   Unlayered on purpose: globals.css has an unlayered
+   `button { padding: 0; border: none; … }` reset that would beat anything
+   inside @layer components.
+   ════════════════════════════════════════════════════════════════ */
+
+/* Shared press feedback for every pressable primitive. */
+.ui-btn, .ui-key {
+  -webkit-tap-highlight-color: transparent;
+  /* No double-tap zoom on controls (the redesigned globals set this on every button). */
+  touch-action: manipulation;
+  transition: transform var(--ds-dur-fast) var(--ds-ease-standard);
+}
+.ui-btn:active:not(:disabled):not([aria-disabled='true']),
+.ui-key:active:not(:disabled),
+.ui-key[data-pressed] {
+  transform: scale(var(--ds-press-scale));
+  transition-duration: var(--ds-dur-instant);
+}
+
+/* ---------- Button ---------- */
+.ui-btn {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--ds-space-2);
+  min-height: var(--ds-btn-h-md); min-width: var(--ds-tap-min);
+  padding: 0 var(--ds-space-4);
+  border: 1px solid transparent; border-radius: var(--ds-btn-radius);
+  font: inherit; font-size: var(--ds-fs-14); font-weight: var(--ds-fw-semibold); line-height: 1.25;
+  white-space: nowrap; text-decoration: none; cursor: pointer; user-select: none;
+}
+.ui-btn > svg { flex-shrink: 0; }
+.ui-btn--sm { min-height: var(--ds-btn-h-sm); padding: 0 var(--ds-space-3); font-size: var(--ds-fs-13); }
+.ui-btn--md { min-height: var(--ds-btn-h-md); }
+.ui-btn--lg { min-height: var(--ds-btn-h-lg); padding: 0 var(--ds-space-5); font-size: var(--ds-fs-16); }
+.ui-btn--xl { min-height: var(--ds-btn-h-xl); padding: 0 var(--ds-space-6); font-size: var(--ds-fs-16); border-radius: var(--ds-radius-lg); }
+.ui-btn--block { display: flex; width: 100%; }
+
+.ui-btn--primary { background: var(--ds-btn-primary-bg); color: var(--ds-btn-primary-fg); }
+.ui-btn--secondary { background: var(--ds-btn-secondary-bg); color: var(--ds-btn-secondary-fg); border-color: var(--ds-btn-secondary-border); }
+.ui-btn--ghost { background: transparent; color: var(--ds-btn-ghost-fg); }
+.ui-btn--danger { background: var(--ds-btn-danger-bg); color: var(--ds-btn-danger-fg); }
+.ui-btn--accent { background: var(--ds-btn-accent-bg); color: var(--ds-btn-accent-fg); }
+@media (hover: hover) {
+  .ui-btn--primary:hover:not(:disabled):not([aria-disabled='true']) { background: var(--ds-btn-primary-bg-hover); }
+  .ui-btn--secondary:hover:not(:disabled):not([aria-disabled='true']) { background: var(--ds-btn-secondary-bg-hover); }
+  .ui-btn--ghost:hover:not(:disabled):not([aria-disabled='true']) { background: var(--ds-btn-ghost-bg-hover); }
+  .ui-btn--danger:hover:not(:disabled):not([aria-disabled='true']) { background: color-mix(in oklch, var(--ds-btn-danger-bg) 88%, var(--ds-color-text)); }
+  .ui-btn--accent:hover:not(:disabled):not([aria-disabled='true']) { background: var(--ds-btn-accent-bg-hover); }
+}
+.ui-btn:disabled,
+.ui-btn[aria-disabled='true'] { opacity: 0.5; cursor: not-allowed; }
+.ui-btn[aria-busy='true'] { cursor: progress; opacity: 1; }
+/* Loading with no leading icon: the label keeps its box (width locked) and the
+   spinner sits over it. */
+/* line-height 1.4 (not the button's 1.25): the label clips overflow, and Thai tone marks / upper vowels sit above a 1.25 line box. */
+.ui-btn__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
+.ui-btn__label[data-hidden] { visibility: hidden; }
+.ui-btn__spinner-overlay { position: absolute; inset: 0; display: grid; place-items: center; }
+
+/* ---------- Spinner (extends the global .spinner) ---------- */
+.ui-spinner--lg { width: 20px; height: 20px; }
+
+/* ---------- Field (label + control + hint/error) ---------- */
+.ui-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ui-field__label { font-size: var(--ds-fs-13); font-weight: var(--ds-fw-semibold); color: var(--ds-color-text); }
+.ui-field__hint { font-size: var(--ds-fs-13); line-height: 1.45; color: var(--ds-color-text-secondary); }
+.ui-field__error { display: flex; align-items: flex-start; gap: 6px; font-size: var(--ds-fs-13); line-height: 1.45; color: var(--ds-color-danger-fg); }
+.ui-field__error > svg { flex-shrink: 0; margin-top: 1px; }
+
+/* ---------- Input ---------- */
+.ui-input {
+  position: relative;
+  display: flex; align-items: center;
+  min-height: var(--ds-input-h-md);
+  background: var(--ds-input-bg); color: var(--ds-input-fg);
+  border: 1px solid var(--ds-input-border); border-radius: var(--ds-radius-md);
+}
+.ui-input--lg { min-height: var(--ds-input-h-lg); }
+.ui-input:focus-within { border-color: var(--ds-color-focus-ring); outline: 2px solid var(--ds-color-focus-ring); outline-offset: 1px; }
+.ui-input[data-invalid] { border-color: var(--ds-input-border-invalid); }
+.ui-input[data-invalid]:focus-within { outline-color: var(--ds-input-border-invalid); }
+.ui-input[data-disabled] { opacity: 0.55; background: var(--ds-color-surface-2); }
+.ui-input__control {
+  flex: 1; min-width: 0; align-self: stretch;
+  padding: 0 var(--ds-space-3);
+  border: 0; background: transparent; color: inherit;
+  font: inherit; font-size: var(--ds-fs-14);
+}
+.ui-input--lg .ui-input__control { font-size: var(--ds-fs-16); }
+.ui-input__control:focus-visible { outline: none; } /* the wrapper draws the ring */
+.ui-input__control::placeholder { color: var(--ds-input-placeholder); opacity: 1; }
+.ui-input__control:disabled { cursor: not-allowed; }
+.ui-input__icon { display: grid; place-items: center; padding-inline-start: var(--ds-space-3); color: var(--ds-color-text-secondary); flex-shrink: 0; }
+.ui-input__icon + .ui-input__control { padding-inline-start: var(--ds-space-2); }
+.ui-input__trail { display: flex; align-items: center; padding-inline-end: 2px; flex-shrink: 0; }
+@media (max-width: 767px) {
+  .ui-input__control { font-size: 16px; } /* no iOS zoom on focus */
+}
+
+/* ---------- Banner ---------- */
+.ui-banner {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 40px; padding: 6px var(--ds-space-4);
+  font-size: var(--ds-fs-14); line-height: 1.4;
+  background: var(--ds-color-surface-2); color: var(--ds-color-text);
+}
+.ui-banner--lg { min-height: 48px; }
+.ui-banner > svg { flex-shrink: 0; }
+.ui-banner__text { flex: 1; min-width: 0; }
+.ui-banner__title { font-weight: var(--ds-fw-semibold); }
+.ui-banner__detail { color: inherit; opacity: 0.92; }
+.ui-banner__action { flex-shrink: 0; display: flex; gap: var(--ds-space-2); }
+.ui-banner--info    { background: var(--ds-color-info-50);    color: var(--ds-color-info-fg); }
+.ui-banner--warning { background: var(--ds-color-warning-50); color: var(--ds-color-warning-fg); }
+.ui-banner--danger  { background: var(--ds-color-danger-50);  color: var(--ds-color-danger-fg); }
+.ui-banner--accent  { background: var(--ds-color-accent-50);  color: var(--ds-color-accent-fg); }
+
+/* ---------- Keypad ---------- */
+.ui-keypad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ds-space-2); }
+.ui-keypad--pin { grid-template-columns: repeat(3, var(--ds-key-pin)); justify-content: center; gap: var(--ds-space-3); }
+.ui-key {
+  display: grid; place-items: center;
+  min-height: var(--ds-key-cash);
+  border: 1px solid var(--ds-color-border); border-radius: var(--ds-radius-lg);
+  background: var(--ds-color-surface); color: var(--ds-color-text);
+  font: inherit; font-family: var(--ds-font-num); font-size: var(--ds-fs-24); font-weight: var(--ds-fw-semibold);
+  font-variant-numeric: tabular-nums;
+  user-select: none; cursor: pointer;
+}
+.ui-keypad--pin .ui-key { width: var(--ds-key-pin); height: var(--ds-key-pin); min-height: 0; border-radius: var(--ds-radius-pill); }
+@media (hover: hover) { .ui-key:hover:not(:disabled) { background: var(--ds-color-surface-2); } }
+.ui-key[data-pressed] { background: var(--ds-color-surface-2); }
+.ui-key--fn { font-family: inherit; font-size: var(--ds-fs-16); color: var(--ds-color-text-secondary); }
+.ui-key--enter { background: var(--ds-btn-primary-bg); color: var(--ds-btn-primary-fg); border-color: transparent; font-family: inherit; font-size: var(--ds-fs-16); }
+@media (hover: hover) { .ui-key--enter:hover:not(:disabled) { background: var(--ds-btn-primary-bg-hover); } }
+.ui-key:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ---------- Reduced motion ----------
+   The global reset already shortens every animation/transition to ~0; also
+   drop the scale feedback (opacity stays). */
+@media (prefers-reduced-motion: reduce) {
+  .ui-btn:active, .ui-key:active, .ui-key[data-pressed] { transform: none !important; }
+}

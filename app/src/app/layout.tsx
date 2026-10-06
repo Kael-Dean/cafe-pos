@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import Script from "next/script";
+import { headers } from "next/headers";
 import { Anuphan } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
@@ -48,7 +48,8 @@ export const viewport: Viewport = {
   ],
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
+  // No maximumScale: pinch-zoom must stay available (WCAG 1.4.4). Inputs are 16px on
+  // phones, so iOS focus-zoom is already avoided without locking the scale.
   // Extend under the notch / home indicator so env(safe-area-inset-*) resolves to
   // real values (the bottom tab bar and modal sheets rely on it). Without this the
   // insets are 0 on notched iPhones/iPads and fixed UI sits under the home bar.
@@ -58,22 +59,28 @@ export const viewport: Viewport = {
   interactiveWidget: 'resizes-content',
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Per-request CSP nonce minted in src/proxy.ts. Reading headers() also keeps
+  // the route dynamic, which nonces require (a static page has no request).
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
   return (
-    <html lang="th" className={`h-full ${anuphan.variable}`}>
+    // suppressHydrationWarning: the no-flash script below stamps data-theme on
+    // <html> before React hydrates, so the attribute never matches server HTML.
+    <html lang="th" className={`h-full ${anuphan.variable}`} suppressHydrationWarning>
       <head>
         {/* No-flash theme: runs before first paint, so the page never renders in
             the wrong theme. Reads the saved preference, falling back to the OS
             setting, and stamps <html data-theme>. Kept tiny and self-contained;
             ThemeProvider later just syncs React state to whatever this set. */}
         <script
+          nonce={nonce}
+          suppressHydrationWarning
           dangerouslySetInnerHTML={{
             __html: `(function(){try{var t=localStorage.getItem('kafe-theme');if(t!=='light'&&t!=='dark'){t=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}document.documentElement.dataset.theme=t;}catch(e){}})();`,
           }}
         />
       </head>
       <body className="h-full">
-        <Script src="/epos-2.27.0.js" strategy="afterInteractive" />
         <Providers>{children}</Providers>
       </body>
     </html>
